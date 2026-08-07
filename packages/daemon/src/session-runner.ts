@@ -92,6 +92,9 @@ export class SessionRunner {
     if (this._status === 'stopped') {
       throw new Error(`Cannot pause stopped session ${this.id}`);
     }
+    if (this._status === 'waiting_permission') {
+      throw new Error(`Cannot pause session ${this.id} while waiting for permission`);
+    }
     await this.agentQuery.interrupt();
     this._status = 'paused';
   }

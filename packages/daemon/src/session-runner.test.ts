@@ -280,6 +280,41 @@ describe('SessionRunner', () => {
     await expect(runner.pause()).rejects.toThrow(/Cannot pause stopped session/);
   });
 
+  it('pause() on a session waiting for permission throws', async () => {
+    const agent = createMockAgent();
+    const runner = new SessionRunner({
+      id: 'session-13',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      onEvent: () => {},
+    });
+
+    runner.start('do the risky thing');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const canUseTool = agent.getCanUseTool();
+    // Start a permission request (this sets status to waiting_permission)
+    const permissionPromise = canUseTool({
+      requestId: 'req-waiting',
+      toolName: 'Bash',
+      input: { command: 'rm -rf /' },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(runner.status).toBe('waiting_permission');
+
+    // Attempting to pause while waiting for permission should throw
+    await expect(runner.pause()).rejects.toThrow(
+      /Cannot pause session.*while waiting for permission/
+    );
+
+    // Status should still be waiting_permission
+    expect(runner.status).toBe('waiting_permission');
+
+    // Clean up: respond to the permission so the promise doesn't hang
+    runner.respondToPermission('req-waiting', { approved: false });
+  });
+
   it('agent stream completing normally emits stopped event and sets status to stopped', async () => {
     const queryFn: QueryFn = () => ({
       [Symbol.asyncIterator]: async function* () {
