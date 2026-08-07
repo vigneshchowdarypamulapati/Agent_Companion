@@ -1,5 +1,10 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { SessionManager } from './session-manager.js';
+import {
+  StartSessionCommand,
+  InjectPromptCommand,
+  RespondToPermissionCommand,
+} from '@companion/protocol';
 import type { SessionEvent } from '@companion/protocol';
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void> | void) {
@@ -15,7 +20,7 @@ export function createHttpServer(manager: SessionManager, eventLog: SessionEvent
   app.post(
     '/sessions',
     asyncHandler(async (req, res) => {
-      const { projectPath, prompt } = req.body as { projectPath: string; prompt: string };
+      const { projectPath, prompt } = StartSessionCommand.omit({ type: true }).parse(req.body);
       const runner = manager.startSession(projectPath, prompt);
       res.status(201).json({ id: runner.id, status: runner.status });
     })
@@ -24,7 +29,7 @@ export function createHttpServer(manager: SessionManager, eventLog: SessionEvent
   app.post(
     '/sessions/:id/prompt',
     asyncHandler(async (req, res) => {
-      const { text } = req.body as { text: string };
+      const { text } = InjectPromptCommand.omit({ type: true, sessionId: true }).parse(req.body);
       manager.getSession(req.params.id).injectPrompt(text);
       res.status(204).end();
     })
@@ -33,11 +38,10 @@ export function createHttpServer(manager: SessionManager, eventLog: SessionEvent
   app.post(
     '/sessions/:id/respond',
     asyncHandler(async (req, res) => {
-      const { requestId, approved, reason } = req.body as {
-        requestId: string;
-        approved: boolean;
-        reason?: string;
-      };
+      const { requestId, approved, reason } = RespondToPermissionCommand.omit({
+        type: true,
+        sessionId: true,
+      }).parse(req.body);
       manager.getSession(req.params.id).respondToPermission(requestId, { approved, reason });
       res.status(204).end();
     })

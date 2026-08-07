@@ -345,6 +345,61 @@ describe('SessionRunner', () => {
     expect(events.some((e) => e.type === 'error')).toBe(false);
   });
 
+  it('crash while a permission is pending resolves the permission instead of hanging, closes the agent query, and emits both error and stopped', async () => {
+    const close = vi.fn(() => {});
+    let capturedCanUseTool:
+      | ((request: PermissionRequest) => Promise<PermissionResponse>)
+      | undefined;
+    let releaseCrash: () => void;
+    const crashGate = new Promise<void>((resolve) => {
+      releaseCrash = resolve;
+    });
+    const queryFn: QueryFn = ({ options }) => {
+      capturedCanUseTool = options.canUseTool;
+      const agentQuery: AgentQuery = {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => {
+            // Block until the test says go, so a permission request can be
+            // registered before the stream crashes.
+            await crashGate;
+            throw new Error('agent crashed mid-permission');
+          },
+        }),
+        interrupt: vi.fn(async () => {}),
+        close,
+      };
+      return agentQuery;
+    };
+    const events: SessionEvent[] = [];
+    const runner = new SessionRunner({
+      id: 'session-14',
+      projectPath: '/tmp/project',
+      queryFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.start('do the risky thing');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const permissionPromise = capturedCanUseTool!({
+      requestId: 'req-crash',
+      toolName: 'Bash',
+      input: {},
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(runner.status).toBe('waiting_permission');
+
+    releaseCrash!();
+
+    const response = await permissionPromise;
+    expect(response).toEqual({ approved: false, reason: 'session crashed' });
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(events.some((e) => e.type === 'error')).toBe(true);
+    expect(events.some((e) => e.type === 'stopped')).toBe(true);
+    expect(runner.status).toBe('stopped');
+  });
+
   it('stop() called twice is idempotent', async () => {
     const agent = createMockAgent();
     const events: SessionEvent[] = [];

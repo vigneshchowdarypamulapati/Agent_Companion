@@ -109,4 +109,40 @@ describe('HTTP control surface', () => {
     const res = await request(app).post('/sessions/does-not-exist/pause');
     expect(res.status).toBe(400);
   });
+
+  it('returns 400 (not 201) when POST /sessions is sent an empty body', async () => {
+    const agent = createMockAgent();
+    const eventLog: SessionEvent[] = [];
+    const manager = new SessionManager({
+      queryFn: agent.queryFn,
+      onEvent: (e) => eventLog.push(e),
+    });
+    const app = createHttpServer(manager, eventLog);
+
+    const res = await request(app).post('/sessions').send({});
+
+    expect(res.status).toBe(400);
+    expect(manager.getActiveSession()).toBeUndefined();
+  });
+
+  it('returns 400 when POST /sessions/:id/respond is missing the approved field', async () => {
+    const agent = createMockAgent();
+    const eventLog: SessionEvent[] = [];
+    const manager = new SessionManager({
+      queryFn: agent.queryFn,
+      onEvent: (e) => eventLog.push(e),
+    });
+    const app = createHttpServer(manager, eventLog);
+
+    const startRes = await request(app)
+      .post('/sessions')
+      .send({ projectPath: '/tmp/project', prompt: 'do the thing' });
+    const sessionId = startRes.body.id as string;
+
+    const res = await request(app)
+      .post(`/sessions/${sessionId}/respond`)
+      .send({ requestId: 'req-1' });
+
+    expect(res.status).toBe(400);
+  });
 });

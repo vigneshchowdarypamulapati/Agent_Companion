@@ -107,24 +107,33 @@ export class SessionRunner {
   }
 
   async stop(): Promise<void> {
-    // Guard against double invocation
+    if (!this.agentQuery) throw new Error(`Session ${this.id} has not started`);
+    this.finalize('stopped');
+  }
+
+  /**
+   * Consolidated termination path. Called from stop() (explicit stop), the
+   * graceful stream-completion path, and the crash path in drainMessages().
+   * Idempotent: only the first call performs cleanup.
+   */
+  private finalize(reason: 'stopped' | 'completed' | 'crashed'): void {
     if (this._status === 'stopped') {
       return;
     }
-    if (!this.agentQuery) throw new Error(`Session ${this.id} has not started`);
 
-    // Resolve any pending permissions before closing
-    const pendingRequestIds = Array.from(this.pendingPermissions.keys());
-    for (const requestId of pendingRequestIds) {
-      const resolve = this.pendingPermissions.get(requestId);
-      if (resolve) {
-        this.pendingPermissions.delete(requestId);
-        resolve({ approved: false, reason: 'session stopped' });
-      }
+    // Resolve any pending permissions before closing so the real SDK
+    // adapter's canUseTool await never hangs forever.
+    for (const [requestId, resolve] of this.pendingPermissions) {
+      this.pendingPermissions.delete(requestId);
+      resolve({ approved: false, reason: `session ${reason}` });
     }
 
-    this.inputQueue.close();
-    this.agentQuery.close();
+    try {
+      this.inputQueue.close();
+    } catch {
+      // already closed
+    }
+    this.agentQuery?.close();
     this._status = 'stopped';
     this.emit({ type: 'stopped', sessionId: this.id, at: Date.now() });
   }
@@ -151,11 +160,8 @@ export class SessionRunner {
         this.handleMessage(message);
       }
       // Handle graceful stream completion: if stream ends without explicit stop(),
-      // mark session as stopped and emit a stopped event
-      if (this._status !== 'stopped') {
-        this._status = 'stopped';
-        this.emit({ type: 'stopped', sessionId: this.id, at: Date.now() });
-      }
+      // run the same cleanup stop() would perform.
+      this.finalize('completed');
     } catch (err) {
       this.emit({
         type: 'error',
@@ -163,7 +169,7 @@ export class SessionRunner {
         message: err instanceof Error ? err.message : String(err),
         at: Date.now(),
       });
-      this._status = 'stopped';
+      this.finalize('crashed');
     }
   }
 

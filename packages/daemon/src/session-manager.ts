@@ -30,11 +30,22 @@ export class SessionManager {
       id,
       projectPath,
       queryFn: this.queryFn,
-      onEvent: this.onEvent,
+      onEvent: (event) => {
+        if (event.type === 'stopped' && this.activeSessionId === id) {
+          this.activeSessionId = undefined;
+        }
+        this.onEvent(event);
+      },
     });
     this.sessions.set(id, runner);
     this.activeSessionId = id;
-    runner.start(prompt);
+    try {
+      runner.start(prompt);
+    } catch (err) {
+      this.sessions.delete(id);
+      this.activeSessionId = undefined;
+      throw err;
+    }
     return runner;
   }
 

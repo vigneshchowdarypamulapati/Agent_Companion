@@ -54,4 +54,46 @@ describe('SessionManager', () => {
     const second = manager.startSession('/tmp/project', 'second');
     expect(manager.getActiveSession()?.id).toBe(second.id);
   });
+
+  it('unwinds activeSessionId if runner.start() throws synchronously, allowing a subsequent startSession to succeed', () => {
+    let callCount = 0;
+    const flakyQueryFn: QueryFn = (args) => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new Error('bad cwd');
+      }
+      return createMockQueryFn()(args);
+    };
+    const manager = new SessionManager({ queryFn: flakyQueryFn, onEvent: () => {} });
+
+    expect(() => manager.startSession('/tmp/project', 'first')).toThrow('bad cwd');
+    expect(manager.getActiveSession()).toBeUndefined();
+
+    const second = manager.startSession('/tmp/project', 'second');
+    expect(manager.getActiveSession()?.id).toBe(second.id);
+  });
+
+  it('crash-terminated session self-clears the active slot without an explicit stopSession call', async () => {
+    const crashingQueryFn: QueryFn = () => ({
+      [Symbol.asyncIterator]: () => ({
+        next: () => Promise.reject(new Error('agent crashed')),
+      }),
+      interrupt: vi.fn(async () => {}),
+      close: vi.fn(() => {}),
+    });
+    const events: SessionEvent[] = [];
+    const manager = new SessionManager({
+      queryFn: crashingQueryFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    const runner = manager.startSession('/tmp/project', 'do the thing');
+    expect(manager.getActiveSession()?.id).toBe(runner.id);
+
+    // Let the crash propagate through drainMessages' catch/finalize path.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(manager.getActiveSession()).toBeUndefined();
+    expect(events.some((e) => e.type === 'stopped')).toBe(true);
+  });
 });
