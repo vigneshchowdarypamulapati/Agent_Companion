@@ -58,6 +58,11 @@ export class ConnectionHub {
         startedAt: event.at,
       });
     } else {
+      // Verify ownership for non-session_started events
+      const session = await this.store.getSession(sessionId);
+      if (!session || session.daemonDeviceId !== connection.deviceId) {
+        throw new Error(`Unknown session ${sessionId}`);
+      }
       const status = STATUS_BY_EVENT_TYPE[event.type];
       if (status) {
         await this.store.updateSessionStatus(sessionId, status);

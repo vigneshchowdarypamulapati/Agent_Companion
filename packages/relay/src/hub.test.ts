@@ -148,4 +148,40 @@ describe('ConnectionHub', () => {
 
     expect(browser.sent).toHaveLength(0);
   });
+
+  it('routeFromDaemon throws when a different daemon attempts to mutate a session', async () => {
+    const store = new InMemoryStore();
+    const hub = new ConnectionHub(store, new InMemoryPubSub());
+    const daemonA = fakeConnection({ deviceId: 'daemon-a', deviceType: 'daemon', userId: 'user-1' });
+    const daemonB = fakeConnection({ deviceId: 'daemon-b', deviceType: 'daemon', userId: 'user-1' });
+
+    // Daemon A creates the session
+    await hub.routeFromDaemon(daemonA, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+
+    // Verify session was created and owned by daemon A
+    let session = await store.getSession('sess-1');
+    expect(session?.daemonDeviceId).toBe('daemon-a');
+    let events = await store.getSessionEvents('sess-1');
+    expect(events).toHaveLength(1);
+
+    // Daemon B attempts to route a turn_complete event for the same session
+    await expect(
+      hub.routeFromDaemon(daemonB, 'sess-1', {
+        type: 'turn_complete',
+        sessionId: 'sess-1',
+        at: 2,
+      })
+    ).rejects.toThrow('Unknown session');
+
+    // Verify session status and event log were not mutated
+    session = await store.getSession('sess-1');
+    expect(session?.status).toBe('running'); // Should still be 'running', not changed
+    events = await store.getSessionEvents('sess-1');
+    expect(events).toHaveLength(1); // Should still have only 1 event
+  });
 });
