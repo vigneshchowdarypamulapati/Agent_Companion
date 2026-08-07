@@ -155,3 +155,18 @@ relaxing that limit later doesn't require a redesign.
   interchangeable, pick at implementation time.
 - Monorepo layout (`packages/daemon`, `packages/relay`, `packages/web`,
   `packages/protocol`).
+
+## Future work (explicitly deferred, not ruled out)
+
+- **Adopting sessions not started through Companion.** A PATH shim that transparently
+  wraps the real `claude` CLI binary in a daemon-held PTY was considered for v1 and
+  deferred. It would let any session started by typing `claude` normally (no explicit
+  "start via Companion" step) become controllable, and would give a path to observing
+  (and possibly controlling, if the extension shells out to the same binary — unverified)
+  VS Code's chat panel. It adds real complexity (PTY handling, OS-specific keystroke
+  injection for pause/resume, a PATH-installing component) and was set aside so v1 can
+  ship on the simpler, more robust SDK-only model. The `SessionRunner` abstraction is
+  designed so this can be added later as a second way to create a session, without
+  changing how control/events flow once a session exists.
+- **VS Code chat panel support.** Not covered in v1 (SDK-driven sessions have no path to
+  it). Revisit alongside the PTY shim work above.
