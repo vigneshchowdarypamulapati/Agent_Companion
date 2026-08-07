@@ -191,4 +191,148 @@ describe('SessionRunner', () => {
 
     expect(() => runner.injectPrompt('too late')).toThrow();
   });
+
+  it('stop() while a permission is pending resolves the permission with approved: false', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const runner = new SessionRunner({
+      id: 'session-8',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.start('do the risky thing');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const canUseTool = agent.getCanUseTool();
+    let permissionResolved = false;
+    let resolvedResponse: PermissionResponse | undefined;
+    const permissionPromise = canUseTool({
+      requestId: 'req-pending',
+      toolName: 'Bash',
+      input: { command: 'rm -rf /' },
+    }).then((r) => {
+      permissionResolved = true;
+      resolvedResponse = r;
+      return r;
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(runner.status).toBe('waiting_permission');
+    expect(permissionResolved).toBe(false);
+
+    // Stop the session while permission is pending
+    await runner.stop();
+    await permissionPromise;
+
+    expect(permissionResolved).toBe(true);
+    expect(resolvedResponse).toEqual({ approved: false, reason: 'session stopped' });
+    expect(runner.status).toBe('stopped');
+  });
+
+  it('respondToPermission called after stop() does not resurrect status', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const runner = new SessionRunner({
+      id: 'session-9',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.start('do the risky thing');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const canUseTool = agent.getCanUseTool();
+    let permissionResolved = false;
+    const permissionPromise = canUseTool({
+      requestId: 'req-late',
+      toolName: 'Bash',
+      input: { command: 'rm -rf /' },
+    }).then(() => {
+      permissionResolved = true;
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    await runner.stop();
+    await permissionPromise;
+
+    // Try to respond to the permission after stop() has been called
+    // This should be a no-op or throw, but status must remain 'stopped'
+    expect(() => runner.respondToPermission('req-late', { approved: true })).toThrow();
+    expect(runner.status).toBe('stopped');
+  });
+
+  it('pause() on a stopped session throws', async () => {
+    const agent = createMockAgent();
+    const runner = new SessionRunner({
+      id: 'session-10',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      onEvent: () => {},
+    });
+
+    runner.start('do the thing');
+    await runner.stop();
+
+    expect(runner.status).toBe('stopped');
+    await expect(runner.pause()).rejects.toThrow(/Cannot pause stopped session/);
+  });
+
+  it('agent stream completing normally emits stopped event and sets status to stopped', async () => {
+    const queryFn: QueryFn = () => ({
+      [Symbol.asyncIterator]: async function* () {
+        // Simulate graceful stream completion (no error, just ends)
+        yield { type: 'assistant_text', text: 'Done!' };
+        // Stream ends here without throwing
+      },
+      interrupt: vi.fn(async () => {}),
+      close: vi.fn(() => {}),
+    });
+    const events: SessionEvent[] = [];
+    const runner = new SessionRunner({
+      id: 'session-11',
+      projectPath: '/tmp/project',
+      queryFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.start('do the thing');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Wait a bit for drainMessages to complete
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(runner.status).toBe('stopped');
+    expect(events.some((e) => e.type === 'stopped')).toBe(true);
+    // No error event should be emitted
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+  });
+
+  it('stop() called twice is idempotent', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const runner = new SessionRunner({
+      id: 'session-12',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.start('do the thing');
+    await runner.stop();
+
+    const stoppedEventsAfterFirstStop = events.filter((e) => e.type === 'stopped').length;
+
+    // Call stop() again
+    await runner.stop();
+
+    const stoppedEventsAfterSecondStop = events.filter((e) => e.type === 'stopped').length;
+
+    // Should still have only one stopped event
+    expect(stoppedEventsAfterFirstStop).toBe(1);
+    expect(stoppedEventsAfterSecondStop).toBe(1);
+    expect(agent.close).toHaveBeenCalledTimes(1);
+  });
 });

@@ -81,13 +81,17 @@ export class SessionRunner {
       approved: response.approved,
       at: Date.now(),
     });
-    if (this.pendingPermissions.size === 0) {
+    // Only revert status to running if session is not already stopped
+    if (this.pendingPermissions.size === 0 && this._status !== 'stopped') {
       this._status = 'running';
     }
   }
 
   async pause(): Promise<void> {
     if (!this.agentQuery) throw new Error(`Session ${this.id} has not started`);
+    if (this._status === 'stopped') {
+      throw new Error(`Cannot pause stopped session ${this.id}`);
+    }
     await this.agentQuery.interrupt();
     this._status = 'paused';
   }
@@ -100,7 +104,22 @@ export class SessionRunner {
   }
 
   async stop(): Promise<void> {
+    // Guard against double invocation
+    if (this._status === 'stopped') {
+      return;
+    }
     if (!this.agentQuery) throw new Error(`Session ${this.id} has not started`);
+
+    // Resolve any pending permissions before closing
+    const pendingRequestIds = Array.from(this.pendingPermissions.keys());
+    for (const requestId of pendingRequestIds) {
+      const resolve = this.pendingPermissions.get(requestId);
+      if (resolve) {
+        this.pendingPermissions.delete(requestId);
+        resolve({ approved: false, reason: 'session stopped' });
+      }
+    }
+
     this.inputQueue.close();
     this.agentQuery.close();
     this._status = 'stopped';
@@ -127,6 +146,12 @@ export class SessionRunner {
     try {
       for await (const message of this.agentQuery) {
         this.handleMessage(message);
+      }
+      // Handle graceful stream completion: if stream ends without explicit stop(),
+      // mark session as stopped and emit a stopped event
+      if (this._status !== 'stopped') {
+        this._status = 'stopped';
+        this.emit({ type: 'stopped', sessionId: this.id, at: Date.now() });
       }
     } catch (err) {
       this.emit({
