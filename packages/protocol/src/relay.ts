@@ -6,6 +6,7 @@ export const RelayMessage = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('event'),
     sessionId: z.string(),
+    seq: z.number(),
     event: SessionEvent,
   }),
   z.object({

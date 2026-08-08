@@ -6,9 +6,19 @@ describe('RelayMessage schema', () => {
     const result = RelayMessage.safeParse({
       kind: 'event',
       sessionId: 'sess-1',
+      seq: 1,
       event: { type: 'turn_complete', sessionId: 'sess-1', at: Date.now() },
     });
     expect(result.success).toBe(true);
+  });
+
+  it('rejects an event envelope missing seq', () => {
+    const result = RelayMessage.safeParse({
+      kind: 'event',
+      sessionId: 'sess-1',
+      event: { type: 'turn_complete', sessionId: 'sess-1', at: Date.now() },
+    });
+    expect(result.success).toBe(false);
   });
 
   it('accepts a valid command envelope', () => {
