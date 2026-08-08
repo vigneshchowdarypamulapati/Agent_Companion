@@ -83,6 +83,9 @@ export default function Dashboard({ token, onUnauthorized }: DashboardProps) {
         pendingLiveEventsRef.current.push(message);
         return;
       }
+      // Live traffic is proof the relay connection is healthy, so a stale
+      // banner from an earlier failed REST load has no business staying up.
+      setLoadError(undefined);
       // session_started is never filtered by session id: establishing a new
       // current session (with a new id) is its entire purpose.
       if (message.event.type === 'session_started') {
@@ -96,6 +99,10 @@ export default function Dashboard({ token, onUnauthorized }: DashboardProps) {
         // Another of this user's daemons; not the session this view tracks.
         return;
       }
+      // Deferred minor: with no tracked session yet there is nothing to filter
+      // against, so events are accepted. "This session's own event arriving
+      // before its session_started" and "a foreign daemon's event" are not
+      // reliably distinguishable here without more information from the relay.
       setLastSeq((prev) => Math.max(prev, message.seq));
       setEvents((prev) => [...prev, message.event]);
       if (current) {
@@ -108,18 +115,33 @@ export default function Dashboard({ token, onUnauthorized }: DashboardProps) {
     [setCurrentSession]
   );
 
-  const flushBufferedLiveEvents = useCallback(() => {
-    const buffered = pendingLiveEventsRef.current;
-    if (buffered.length === 0) return;
-    pendingLiveEventsRef.current = [];
-    for (const message of buffered) {
-      handleLiveEvent(message);
-    }
-  }, [handleLiveEvent]);
+  /**
+   * Replays everything staged during a load, in seq order, through
+   * handleLiveEvent — the same path real-time events take. Routing them rather
+   * than splicing them into `events` directly is what keeps the session-id
+   * filter, the status derivation, and the session_started handling from being
+   * bypassed for exactly the events that arrived during the race window.
+   *
+   * `minSeq` is the history snapshot's last seq: anything at or below it is
+   * already in the snapshot we just rendered, anything above it arrived after
+   * the snapshot was taken and is genuinely new.
+   */
+  const drainBufferedLiveEvents = useCallback(
+    (minSeq: number) => {
+      const buffered = pendingLiveEventsRef.current;
+      pendingLiveEventsRef.current = [];
+      if (buffered.length === 0) return;
+      const late = buffered.filter((message) => message.seq > minSeq).sort((a, b) => a.seq - b.seq);
+      for (const message of late) {
+        handleLiveEvent(message);
+      }
+    },
+    [handleLiveEvent]
+  );
 
   /**
-   * Full session discovery: find the active session, load its history, and
-   * merge in anything that arrived live while those two REST calls were in
+   * Full session discovery: find the active session, load its history, then
+   * replay anything that arrived live while those two REST calls were in
    * flight. Used both on mount and on reconnect when this view isn't tracking
    * a session yet (the session may have started while the socket was down —
    * the session_started event that would have told us was missed).
@@ -127,22 +149,20 @@ export default function Dashboard({ token, onUnauthorized }: DashboardProps) {
   const loadSession = useCallback(async () => {
     const generation = (loadGenerationRef.current += 1);
     loadedRef.current = false;
+    let historySeq = 0;
     try {
       const active = await getActiveSession(token);
       if (generation !== loadGenerationRef.current) return;
       if (active) {
+        // Set before the drain below: the buffered events are replayed through
+        // handleLiveEvent, whose session-id filter needs the session it is
+        // filtering against to already be in place.
         setCurrentSession({ id: active.id, projectPath: active.projectPath, status: active.status });
         const history = await getSessionEvents(token, active.id);
         if (generation !== loadGenerationRef.current) return;
-        const historySeq = history.length > 0 ? history[history.length - 1].seq : 0;
-        // Anything buffered with a seq at or below the history's last seq is
-        // already part of the snapshot we just fetched; anything above it
-        // arrived after and would otherwise be lost to the overwrite.
-        const buffered = pendingLiveEventsRef.current;
-        pendingLiveEventsRef.current = [];
-        const late = buffered.filter((message) => message.seq > historySeq);
-        setEvents([...history.map((h) => h.event), ...late.map((message) => message.event)]);
-        setLastSeq(late.reduce((max, message) => Math.max(max, message.seq), historySeq));
+        historySeq = history.length > 0 ? history[history.length - 1].seq : 0;
+        setEvents(history.map((h) => h.event));
+        setLastSeq(historySeq);
       }
       setLoadError(undefined);
     } catch (err) {
@@ -159,10 +179,14 @@ export default function Dashboard({ token, onUnauthorized }: DashboardProps) {
       if (generation === loadGenerationRef.current) {
         loadedRef.current = true;
         setLoaded(true);
-        flushBufferedLiveEvents();
+        // Drains on every path, including the no-active-session and failed
+        // paths (where historySeq stays 0): a session_started that arrived in
+        // the gap between the REST query and now must still be able to
+        // establish the session.
+        drainBufferedLiveEvents(historySeq);
       }
     }
-  }, [token, setCurrentSession, flushBufferedLiveEvents]);
+  }, [token, setCurrentSession, drainBufferedLiveEvents]);
 
   useEffect(() => {
     void loadSession();

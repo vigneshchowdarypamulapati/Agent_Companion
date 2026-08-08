@@ -257,6 +257,79 @@ describe('Dashboard', () => {
     expect(screen.getByText('from history')).toBeInTheDocument();
   });
 
+  // Finding 2 + Finding 5: buffered events are replayed through
+  // handleLiveEvent, so the session-id filter applies to them too.
+  it('drops a buffered event from a different session when the initial load resolves', async () => {
+    let resolveActive: (value: sessionsApi.SessionRecord | undefined) => void = () => {};
+    const activePromise = new Promise<sessionsApi.SessionRecord | undefined>((resolve) => {
+      resolveActive = resolve;
+    });
+    vi.spyOn(sessionsApi, 'getActiveSession').mockReturnValue(activePromise);
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([
+      {
+        seq: 1,
+        sessionId: 'sess-1',
+        event: { type: 'assistant_text', sessionId: 'sess-1', text: 'from history', at: 1 },
+        createdAt: 1,
+      },
+    ]);
+    const mock = mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+
+    // seq is a single global counter across all of a user's sessions, so a
+    // foreign event out-ranking the history snapshot is the common case.
+    act(() => {
+      mock.emit({
+        sessionId: 'sess-other',
+        seq: 2,
+        event: { type: 'assistant_text', sessionId: 'sess-other', text: 'from another session', at: 2 },
+      });
+    });
+
+    await act(async () => {
+      resolveActive(activeSession);
+      await activePromise;
+    });
+
+    expect(await screen.findByText('from history')).toBeInTheDocument();
+    expect(screen.queryByText('from another session')).not.toBeInTheDocument();
+  });
+
+  // Finding 2 + status derivation
+  it('applies status derivation to a buffered event when the initial load resolves', async () => {
+    let resolveActive: (value: sessionsApi.SessionRecord | undefined) => void = () => {};
+    const activePromise = new Promise<sessionsApi.SessionRecord | undefined>((resolve) => {
+      resolveActive = resolve;
+    });
+    vi.spyOn(sessionsApi, 'getActiveSession').mockReturnValue(activePromise);
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([
+      {
+        seq: 1,
+        sessionId: 'sess-1',
+        event: { type: 'assistant_text', sessionId: 'sess-1', text: 'from history', at: 1 },
+        createdAt: 1,
+      },
+    ]);
+    const mock = mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+
+    act(() => {
+      mock.emit({ sessionId: 'sess-1', seq: 2, event: { type: 'stopped', sessionId: 'sess-1', at: 2 } });
+    });
+
+    await act(async () => {
+      resolveActive(activeSession);
+      await activePromise;
+    });
+
+    // The REST snapshot said 'running'; the buffered stopped event must still
+    // move the UI off it, or dead sessions show enabled controls.
+    expect(await screen.findByText('Stopped')).toBeInTheDocument();
+    expect(screen.getByText('Session stopped')).toBeInTheDocument();
+  });
+
   // Finding 3
   it('shows a distinct error state when the initial load fails', async () => {
     vi.spyOn(sessionsApi, 'getActiveSession').mockRejectedValue(
@@ -269,6 +342,27 @@ describe('Dashboard', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Failed to fetch active session: HTTP 500');
     expect(screen.queryByText('No Active Sessions')).not.toBeInTheDocument();
+  });
+
+  it('clears the load-error banner once a live event is processed', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockRejectedValue(
+      new Error('Failed to fetch active session: HTTP 500')
+    );
+    const mock = mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+    await screen.findByRole('alert');
+
+    // Live traffic proves the relay connection is fine, whatever a past REST
+    // call did.
+    mock.emit({
+      sessionId: 'sess-1',
+      seq: 1,
+      event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: 1 },
+    });
+
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(screen.getByText('/tmp/project')).toBeInTheDocument();
   });
 
   // Finding 5
