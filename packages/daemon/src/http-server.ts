@@ -6,6 +6,7 @@ import {
   RespondToPermissionCommand,
 } from '@companion/protocol';
 import type { SessionEvent } from '@companion/protocol';
+import { dispatchCommand } from './command-dispatcher.js';
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void> | void) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -30,7 +31,7 @@ export function createHttpServer(manager: SessionManager, eventLog: SessionEvent
     '/sessions/:id/prompt',
     asyncHandler(async (req, res) => {
       const { text } = InjectPromptCommand.omit({ type: true, sessionId: true }).parse(req.body);
-      manager.getSession(req.params.id).injectPrompt(text);
+      await dispatchCommand(manager, { type: 'inject_prompt', sessionId: req.params.id, text });
       res.status(204).end();
     })
   );
@@ -42,7 +43,13 @@ export function createHttpServer(manager: SessionManager, eventLog: SessionEvent
         type: true,
         sessionId: true,
       }).parse(req.body);
-      manager.getSession(req.params.id).respondToPermission(requestId, { approved, reason });
+      await dispatchCommand(manager, {
+        type: 'respond_to_permission',
+        sessionId: req.params.id,
+        requestId,
+        approved,
+        reason,
+      });
       res.status(204).end();
     })
   );
@@ -50,7 +57,7 @@ export function createHttpServer(manager: SessionManager, eventLog: SessionEvent
   app.post(
     '/sessions/:id/pause',
     asyncHandler(async (req, res) => {
-      await manager.getSession(req.params.id).pause();
+      await dispatchCommand(manager, { type: 'pause', sessionId: req.params.id });
       res.status(204).end();
     })
   );
@@ -58,7 +65,7 @@ export function createHttpServer(manager: SessionManager, eventLog: SessionEvent
   app.post(
     '/sessions/:id/resume',
     asyncHandler(async (req, res) => {
-      manager.getSession(req.params.id).resume();
+      await dispatchCommand(manager, { type: 'resume', sessionId: req.params.id });
       res.status(204).end();
     })
   );
@@ -66,7 +73,7 @@ export function createHttpServer(manager: SessionManager, eventLog: SessionEvent
   app.post(
     '/sessions/:id/stop',
     asyncHandler(async (req, res) => {
-      await manager.stopSession(req.params.id);
+      await dispatchCommand(manager, { type: 'stop', sessionId: req.params.id });
       res.status(204).end();
     })
   );
