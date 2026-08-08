@@ -58,7 +58,7 @@ describe('RelayClient', () => {
     client!.connect();
 
     const [serverSocket] = await Promise.all([serverConnected, clientOpened]);
-    expect(receivedUrl).toContain('token=test-token');
+    expect(receivedUrl).toMatch(/^\/ws\?.*token=test-token/);
 
     const received = waitForMessage(serverSocket);
     const event: SessionEvent = { type: 'turn_complete', sessionId: 'sess-1', at: Date.now() };

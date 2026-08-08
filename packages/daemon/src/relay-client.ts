@@ -61,8 +61,9 @@ export class RelayClient {
   }
 
   private openSocket(): void {
-    const separator = this.url.includes('?') ? '&' : '?';
-    const ws = new WebSocket(`${this.url}${separator}token=${encodeURIComponent(this.token)}`);
+    const base = `${this.url.replace(/\/$/, '')}/ws`;
+    const separator = base.includes('?') ? '&' : '?';
+    const ws = new WebSocket(`${base}${separator}token=${encodeURIComponent(this.token)}`);
     this.ws = ws;
 
     // Attached before any other listener: an 'error' event with no listener is an
