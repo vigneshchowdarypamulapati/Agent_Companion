@@ -24,6 +24,25 @@ describe('SessionEvent schema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts a valid command_failed event', () => {
+    const result = SessionEvent.safeParse({
+      type: 'command_failed',
+      sessionId: 'abc',
+      message: 'No session with id abc',
+      at: Date.now(),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a command_failed missing message', () => {
+    const result = SessionEvent.safeParse({
+      type: 'command_failed',
+      sessionId: 'abc',
+      at: Date.now(),
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects an event with an unknown type', () => {
     const result = SessionEvent.safeParse({
       type: 'not_a_real_event',

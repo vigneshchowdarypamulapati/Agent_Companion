@@ -62,6 +62,12 @@ export const SessionEvent = z.discriminatedUnion('type', [
     at: z.number(),
   }),
   z.object({
+    type: z.literal('command_failed'),
+    sessionId: z.string(),
+    message: z.string(),
+    at: z.number(),
+  }),
+  z.object({
     type: z.literal('stopped'),
     sessionId: z.string(),
     at: z.number(),

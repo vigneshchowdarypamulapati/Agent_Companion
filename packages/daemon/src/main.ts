@@ -56,7 +56,7 @@ async function main(): Promise<void> {
               return;
             }
             const errorEvent: SessionEvent = {
-              type: 'error',
+              type: 'command_failed',
               sessionId: command.sessionId,
               message,
               at: Date.now(),
