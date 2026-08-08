@@ -59,13 +59,16 @@ async function pairNewDevice(
   deviceName: string,
   fetchFn: FetchLike
 ): Promise<DeviceCredentials> {
-  const codeRes = await fetchFn(`${relayHttpUrl}/pairing/request-code`, { method: 'POST' });
+  // Strip a trailing slash the same way relay-client.ts does, so a
+  // COMPANION_RELAY_URL like `ws://host:8787/` cannot produce `...//request-code`.
+  const base = relayHttpUrl.replace(/\/$/, '');
+  const codeRes = await fetchFn(`${base}/pairing/request-code`, { method: 'POST' });
   if (!codeRes.ok) {
     throw new Error(`Failed to request a pairing code from the relay: HTTP ${codeRes.status}`);
   }
   const { code } = (await codeRes.json()) as { code: string };
 
-  const redeemRes = await fetchFn(`${relayHttpUrl}/pairing/redeem`, {
+  const redeemRes = await fetchFn(`${base}/pairing/redeem`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ code, deviceType: 'daemon', deviceName }),

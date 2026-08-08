@@ -28,5 +28,9 @@ export async function dispatchCommand(manager: SessionManager, command: Command)
     case 'stop':
       await manager.stopSession(command.sessionId);
       return;
+    default: {
+      const exhaustiveCheck: never = command;
+      throw new Error(`Unhandled command type: ${JSON.stringify(exhaustiveCheck)}`);
+    }
   }
 }

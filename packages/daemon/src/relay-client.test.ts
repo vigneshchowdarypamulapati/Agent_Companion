@@ -125,4 +125,110 @@ describe('RelayClient', () => {
     await secondConnection;
     expect(connectionCount).toBe(2);
   });
+
+  it('does not reset backoff when the relay closes the connection before openConfirmMs', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    // Every connection is closed the instant it is accepted — the shape of an
+    // auth rejection, where the relay accepts the upgrade and only then closes
+    // with 4401. Backoff must keep growing across these attempts.
+    const connectedAt: number[] = [];
+    const thirdConnection = new Promise<void>((resolve) => {
+      wss.on('connection', (ws) => {
+        connectedAt.push(Date.now());
+        ws.close();
+        if (connectedAt.length === 3) resolve();
+      });
+    });
+
+    client = new RelayClient({
+      url: `ws://127.0.0.1:${fake.port}`,
+      token: 'test-token',
+      onCommand: () => {},
+      initialBackoffMs: 50,
+      maxBackoffMs: 10_000,
+      openConfirmMs: 20,
+    });
+    client.connect();
+
+    await thirdConnection;
+
+    const firstGap = connectedAt[1] - connectedAt[0];
+    const secondGap = connectedAt[2] - connectedAt[1];
+    // 50ms then 100ms if backoff kept growing; a flat ~50ms both times would
+    // mean 'open' had reset it despite the immediate close.
+    expect(secondGap).toBeGreaterThan(75);
+    expect(secondGap).toBeGreaterThan(firstGap);
+  });
+
+  it('resets backoff once a connection has stayed open past openConfirmMs', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    const connectedAt: number[] = [];
+    let closedStableAt = 0;
+    const fourthConnection = new Promise<void>((resolve) => {
+      wss.on('connection', (ws) => {
+        connectedAt.push(Date.now());
+        if (connectedAt.length <= 2) {
+          // Grow the backoff: 50ms then 100ms.
+          ws.close();
+          return;
+        }
+        if (connectedAt.length === 3) {
+          // Hold this one open well past openConfirmMs so the confirm timer fires.
+          setTimeout(() => {
+            closedStableAt = Date.now();
+            ws.close();
+          }, 100);
+          return;
+        }
+        resolve();
+      });
+    });
+
+    client = new RelayClient({
+      url: `ws://127.0.0.1:${fake.port}`,
+      token: 'test-token',
+      onCommand: () => {},
+      initialBackoffMs: 50,
+      maxBackoffMs: 10_000,
+      openConfirmMs: 20,
+    });
+    client.connect();
+
+    await fourthConnection;
+
+    const gapAfterStableConnection = connectedAt[3] - closedStableAt;
+    // Reset means the next attempt waits ~50ms. Without the reset it would have
+    // waited the grown backoff of ~200ms.
+    expect(gapAfterStableConnection).toBeLessThan(150);
+  });
+
+  it('does not leak the token into a log line when the relay URL is malformed', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss; // unused here, but the shared teardown closes it
+
+    const logs: string[] = [];
+    client = new RelayClient({
+      // `new WebSocket('not-a-url/ws?token=...')` throws synchronously, and the
+      // thrown message quotes the entire URL — token included.
+      url: 'not-a-url',
+      token: 'SUPERSECRET',
+      onCommand: () => {},
+      onLog: (message) => logs.push(message),
+      // Long enough that no retry attempt happens during this test.
+      initialBackoffMs: 10_000,
+    });
+
+    expect(() => client!.connect()).not.toThrow();
+
+    expect(logs.length).toBeGreaterThan(0);
+    for (const message of logs) {
+      expect(message).not.toContain('SUPERSECRET');
+      expect(message).not.toContain('token=');
+    }
+    expect(logs.join('\n')).toContain('invalid COMPANION_RELAY_URL');
+  });
 });

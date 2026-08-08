@@ -41,6 +41,28 @@ describe('getOrCreateDeviceToken', () => {
     expect(persisted).toEqual({ token: 'secret-token', deviceId: 'device-1' });
   });
 
+  it('does not double up the slash when relayHttpUrl has a trailing slash', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'companion-device-'));
+    const tokenPath = join(dir, 'device.json');
+    const calls: string[] = [];
+    const fetchFn: FetchLike = async (url) => {
+      calls.push(url);
+      if (url.endsWith('/pairing/request-code')) {
+        return { ok: true, status: 201, json: async () => ({ code: '123456' }) };
+      }
+      return { ok: true, status: 201, json: async () => ({ token: 'secret-token', deviceId: 'device-1' }) };
+    };
+
+    await getOrCreateDeviceToken({
+      relayHttpUrl: 'http://x/',
+      deviceName: 'laptop',
+      tokenPath,
+      fetchFn,
+    });
+
+    expect(calls).toEqual(['http://x/pairing/request-code', 'http://x/pairing/redeem']);
+  });
+
   it('reuses a previously persisted token without calling the relay', async () => {
     dir = await mkdtemp(join(tmpdir(), 'companion-device-'));
     const tokenPath = join(dir, 'device.json');
