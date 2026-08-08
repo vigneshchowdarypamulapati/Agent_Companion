@@ -266,4 +266,53 @@ describe('relay server', () => {
     );
     expect(await received).toMatchObject({ kind: 'error', message: expect.stringContaining('Unknown session') });
   });
+
+  // --- GET /sessions/active ---
+
+  it('returns the active session for the authenticated device\'s user', async () => {
+    const store = new InMemoryStore();
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
+    const browserToken = await pair(httpServer, 'browser', 'phone');
+
+    const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
+    sockets.push(daemonWs);
+    await waitForOpen(daemonWs);
+    daemonWs.send(
+      JSON.stringify({
+        kind: 'event',
+        sessionId: 'sess-1',
+        seq: 0,
+        event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: Date.now() },
+      })
+    );
+    await expect
+      .poll(async () => (await store.getSession('sess-1'))?.id, { timeout: 2000 })
+      .toBe('sess-1');
+
+    const res = await request(httpServer).get('/sessions/active').set('Authorization', `Bearer ${browserToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: 'sess-1', status: 'running' });
+  });
+
+  it('returns 404 when there is no active session', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const token = await pair(httpServer, 'browser', 'phone');
+    const res = await request(httpServer).get('/sessions/active').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'No active session' });
+  });
+
+  it('returns 401 for GET /sessions/active without an Authorization header', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer).get('/sessions/active');
+    expect(res.status).toBe(401);
+  });
 });

@@ -86,4 +86,48 @@ describe('InMemoryStore', () => {
     const session = await store.getSession('sess-1');
     expect(session?.status).toBe('paused');
   });
+
+  it('getActiveSessionForUser returns the session that is not stopped', async () => {
+    const store = new InMemoryStore();
+    await store.upsertSession({
+      id: 'sess-1',
+      userId: 'user-1',
+      daemonDeviceId: 'device-1',
+      projectPath: '/tmp/project',
+      status: 'running',
+      startedAt: 1,
+    });
+
+    const active = await store.getActiveSessionForUser('user-1');
+    expect(active?.id).toBe('sess-1');
+  });
+
+  it('getActiveSessionForUser returns undefined once the session is stopped', async () => {
+    const store = new InMemoryStore();
+    await store.upsertSession({
+      id: 'sess-1',
+      userId: 'user-1',
+      daemonDeviceId: 'device-1',
+      projectPath: '/tmp/project',
+      status: 'running',
+      startedAt: 1,
+    });
+    await store.updateSessionStatus('sess-1', 'stopped');
+
+    expect(await store.getActiveSessionForUser('user-1')).toBeUndefined();
+  });
+
+  it('getActiveSessionForUser only returns sessions belonging to that user', async () => {
+    const store = new InMemoryStore();
+    await store.upsertSession({
+      id: 'sess-1',
+      userId: 'user-1',
+      daemonDeviceId: 'device-1',
+      projectPath: '/tmp/project',
+      status: 'running',
+      startedAt: 1,
+    });
+
+    expect(await store.getActiveSessionForUser('user-2')).toBeUndefined();
+  });
 });

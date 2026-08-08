@@ -52,6 +52,7 @@ export interface Store {
   upsertSession(session: SessionRecord): Promise<void>;
   updateSessionStatus(sessionId: string, status: SessionStatus): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
+  getActiveSessionForUser(userId: string): Promise<SessionRecord | undefined>;
   appendSessionEvent(sessionId: string, event: SessionEvent): Promise<StoredSessionEvent>;
   getSessionEvents(sessionId: string, sinceSeq?: number): Promise<StoredSessionEvent[]>;
 }

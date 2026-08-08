@@ -19,6 +19,9 @@ publicly reachable) to configure the listener.
   pairing code for the (single, v1) default user.
 - `POST /pairing/redeem` `{ code, deviceType, deviceName }` — exchange a
   pairing code for a long-lived device token.
+- `GET /sessions/active` — the caller's current non-stopped session (for a
+  client that doesn't yet know a session id, e.g. on first load). `404` if
+  none.
 - `GET /sessions/:id` — current session status (for reconnect/catch-up).
 - `GET /sessions/:id/events?since=<seq>` — session event history.
 

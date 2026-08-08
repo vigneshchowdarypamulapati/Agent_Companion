@@ -60,6 +60,23 @@ export async function createRelayServer({ store, pubsub }: RelayServerOptions): 
   );
 
   app.get(
+    '/sessions/active',
+    asyncHandler(async (req, res) => {
+      const device = await authenticate(req, pairing);
+      if (!device) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      const session = await store.getActiveSessionForUser(device.userId);
+      if (!session) {
+        res.status(404).json({ error: 'No active session' });
+        return;
+      }
+      res.status(200).json(session);
+    })
+  );
+
+  app.get(
     '/sessions/:id',
     asyncHandler(async (req, res) => {
       const device = await authenticate(req, pairing);

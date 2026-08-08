@@ -86,6 +86,15 @@ export class InMemoryStore implements Store {
     return this.sessions.get(sessionId);
   }
 
+  async getActiveSessionForUser(userId: string): Promise<SessionRecord | undefined> {
+    for (const session of this.sessions.values()) {
+      if (session.userId === userId && session.status !== 'stopped') {
+        return session;
+      }
+    }
+    return undefined;
+  }
+
   async appendSessionEvent(sessionId: string, event: SessionEvent): Promise<StoredSessionEvent> {
     const stored: StoredSessionEvent = {
       seq: this.nextSeq++,
