@@ -1,10 +1,49 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import App from './App';
+import * as pairingApi from './api/pairing';
+import * as sessionsApi from './api/sessions';
+import { clearStoredCredentials, storeCredentials } from './storage';
+import * as useRelayConnectionModule from './use-relay-connection';
 
 describe('App', () => {
-  it('renders without crashing', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    clearStoredCredentials();
+  });
+
+  it('shows PairingScreen when there are no stored credentials', () => {
     render(<App />);
-    expect(screen.getByText('Claude Companion')).toBeInTheDocument();
+    expect(screen.getByText('Pair this device')).toBeInTheDocument();
+  });
+
+  it('shows Dashboard when credentials are already stored', async () => {
+    storeCredentials({ token: 'tok-1', deviceId: 'dev-1' });
+    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(undefined);
+    vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
+      connected: true,
+      sendCommand: vi.fn(),
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText('No Active Sessions')).toBeInTheDocument();
+  });
+
+  it('switches to Dashboard after pairing succeeds', async () => {
+    vi.spyOn(pairingApi, 'redeemPairingCode').mockResolvedValue({ token: 'tok-1', deviceId: 'dev-1' });
+    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(undefined);
+    vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
+      connected: true,
+      sendCommand: vi.fn(),
+    });
+
+    render(<App />);
+
+    await userEvent.type(screen.getByLabelText(/enter pairing code/i), '123456');
+    await userEvent.click(screen.getByRole('button', { name: /^pair$/i }));
+
+    expect(await screen.findByText('No Active Sessions')).toBeInTheDocument();
   });
 });

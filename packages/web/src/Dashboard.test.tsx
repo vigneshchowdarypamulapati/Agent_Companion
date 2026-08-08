@@ -1,0 +1,199 @@
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import Dashboard from './Dashboard';
+import * as sessionsApi from './api/sessions';
+import { UnauthorizedError } from './api/sessions';
+import * as useRelayConnectionModule from './use-relay-connection';
+import type { LiveEvent } from './use-relay-connection';
+
+function mockUseRelayConnection() {
+  let capturedOnEvent: ((message: LiveEvent) => void) | undefined;
+  let connectedValue = true;
+  const sendCommand = vi.fn();
+  vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockImplementation((options) => {
+    capturedOnEvent = options.onEvent;
+    return { connected: connectedValue, sendCommand };
+  });
+  return {
+    emit: (message: LiveEvent) => capturedOnEvent?.(message),
+    sendCommand,
+    setConnected: (value: boolean) => {
+      connectedValue = value;
+    },
+  };
+}
+
+const activeSession = {
+  id: 'sess-1',
+  userId: 'u',
+  daemonDeviceId: 'd',
+  projectPath: '/tmp/project',
+  status: 'running' as const,
+  startedAt: 1,
+};
+
+describe('Dashboard', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows "No Active Sessions" when there is nothing active', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(undefined);
+    mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+
+    expect(await screen.findByText('No Active Sessions')).toBeInTheDocument();
+  });
+
+  it('loads the active session and its history on mount', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(activeSession);
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([
+      {
+        seq: 1,
+        sessionId: 'sess-1',
+        event: { type: 'assistant_text', sessionId: 'sess-1', text: 'hi', at: 1 },
+        createdAt: 1,
+      },
+    ]);
+    mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+
+    expect(await screen.findByText('Running')).toBeInTheDocument();
+    expect(await screen.findByText('hi')).toBeInTheDocument();
+  });
+
+  it('appends a live event to the activity feed', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(activeSession);
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([]);
+    const mock = mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+    await screen.findByText('Running');
+
+    mock.emit({
+      sessionId: 'sess-1',
+      seq: 2,
+      event: { type: 'assistant_text', sessionId: 'sess-1', text: 'live update', at: 2 },
+    });
+
+    expect(await screen.findByText('live update')).toBeInTheDocument();
+  });
+
+  it('starts a fresh session and clears the feed on a live session_started event', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(undefined);
+    const mock = mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+    await screen.findByText('No Active Sessions');
+
+    mock.emit({
+      sessionId: 'sess-2',
+      seq: 1,
+      event: { type: 'session_started', sessionId: 'sess-2', projectPath: '/new/project', at: 1 },
+    });
+
+    expect(await screen.findByText('/new/project')).toBeInTheDocument();
+  });
+
+  it('shows a PermissionPrompt for a pending request and sends the response', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(activeSession);
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([]);
+    const mock = mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+    await screen.findByText('Running');
+
+    mock.emit({
+      sessionId: 'sess-1',
+      seq: 2,
+      event: {
+        type: 'permission_request',
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        toolName: 'Bash',
+        input: {},
+        at: 2,
+      },
+    });
+
+    const approveButton = await screen.findByRole('button', { name: /approve/i });
+    await userEvent.click(approveButton);
+
+    expect(mock.sendCommand).toHaveBeenCalledWith('sess-1', {
+      type: 'respond_to_permission',
+      sessionId: 'sess-1',
+      requestId: 'req-1',
+      approved: true,
+    });
+  });
+
+  it('does not show a PermissionPrompt once the request has been resolved', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(activeSession);
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([]);
+    const mock = mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+    await screen.findByText('Running');
+
+    mock.emit({
+      sessionId: 'sess-1',
+      seq: 2,
+      event: {
+        type: 'permission_request',
+        sessionId: 'sess-1',
+        requestId: 'req-1',
+        toolName: 'Bash',
+        input: {},
+        at: 2,
+      },
+    });
+    await screen.findByRole('button', { name: /approve/i });
+
+    mock.emit({
+      sessionId: 'sess-1',
+      seq: 3,
+      event: { type: 'permission_resolved', sessionId: 'sess-1', requestId: 'req-1', approved: true, at: 3 },
+    });
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: /approve/i })).not.toBeInTheDocument());
+  });
+
+  it('calls onUnauthorized when the initial fetch is rejected with 401', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockRejectedValue(new UnauthorizedError());
+    mockUseRelayConnection();
+    const onUnauthorized = vi.fn();
+
+    render(<Dashboard token="bad-token" onUnauthorized={onUnauthorized} />);
+
+    await waitFor(() => expect(onUnauthorized).toHaveBeenCalledOnce());
+  });
+
+  it('re-fetches events since the last-seen seq after reconnecting', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(activeSession);
+    vi.spyOn(sessionsApi, 'getSessionEvents')
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          seq: 3,
+          sessionId: 'sess-1',
+          event: { type: 'assistant_text', sessionId: 'sess-1', text: 'missed while offline', at: 3 },
+          createdAt: 3,
+        },
+      ]);
+    const mock = mockUseRelayConnection();
+
+    const { rerender } = render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+    await screen.findByText('Running');
+
+    mock.setConnected(false);
+    rerender(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+    mock.setConnected(true);
+    rerender(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+
+    expect(await screen.findByText('missed while offline')).toBeInTheDocument();
+    expect(sessionsApi.getSessionEvents).toHaveBeenCalledWith('tok-1', 'sess-1', 0);
+  });
+});

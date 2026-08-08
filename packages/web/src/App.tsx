@@ -1,7 +1,22 @@
+import { useState } from 'react';
+import PairingScreen from './PairingScreen';
+import Dashboard from './Dashboard';
+import { clearStoredCredentials, getStoredCredentials } from './storage';
+
 export default function App() {
+  const [credentials, setCredentials] = useState(() => getStoredCredentials());
+
+  if (!credentials) {
+    return <PairingScreen onPaired={() => setCredentials(getStoredCredentials())} />;
+  }
+
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 flex items-center justify-center">
-      <p>Claude Companion</p>
-    </div>
+    <Dashboard
+      token={credentials.token}
+      onUnauthorized={() => {
+        clearStoredCredentials();
+        setCredentials(undefined);
+      }}
+    />
   );
 }
