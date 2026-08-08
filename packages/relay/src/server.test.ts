@@ -108,4 +108,31 @@ describe('relay server', () => {
     const res = await request(httpServer).get('/sessions/does-not-exist');
     expect(res.status).toBe(404);
   });
+
+  it('closes WS connection cleanly if Store.getDeviceByTokenHash throws', async () => {
+    const baseStore = new InMemoryStore();
+    const pubsub = new InMemoryPubSub();
+
+    // Create a wrapper store that throws on getDeviceByTokenHash.
+    const throwingStore = Object.create(baseStore) as typeof baseStore;
+    throwingStore.getDeviceByTokenHash = async () => {
+      throw new Error('Store connection failed');
+    };
+
+    httpServer = createRelayServer({ store: throwingStore, pubsub });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=any-token`);
+    sockets.push(ws);
+
+    // Wait for the connection to close. The close code should be 1011 (internal error),
+    // and the entire relay process should still be running (not crashed).
+    const closeCode = await new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)));
+    expect(closeCode).toBe(1011);
+
+    // Verify the relay is still responsive by making an HTTP request.
+    const res = await request(httpServer).post('/pairing/request-code').send();
+    expect(res.status).toBe(201);
+  });
 });

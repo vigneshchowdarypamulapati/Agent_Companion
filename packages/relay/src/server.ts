@@ -77,42 +77,47 @@ export function createRelayServer({ store, pubsub }: RelayServerOptions): Server
 
   wss.on('connection', (ws, req) => {
     void (async () => {
-      const url = new URL(req.url ?? '', 'http://localhost');
-      const token = url.searchParams.get('token');
-      if (!token) {
-        ws.close(4401, 'Missing token');
-        return;
-      }
-      const device = await pairing.verifyToken(token);
-      if (!device) {
-        ws.close(4401, 'Invalid token');
-        return;
-      }
+      try {
+        const url = new URL(req.url ?? '', 'http://localhost');
+        const token = url.searchParams.get('token');
+        if (!token) {
+          ws.close(4401, 'Missing token');
+          return;
+        }
+        const device = await pairing.verifyToken(token);
+        if (!device) {
+          ws.close(4401, 'Invalid token');
+          return;
+        }
 
-      const connection: Connection = {
-        deviceId: device.id,
-        userId: device.userId,
-        deviceType: device.type,
-        send: (message) => ws.send(JSON.stringify(message)),
-      };
-      hub.register(connection);
+        const connection: Connection = {
+          deviceId: device.id,
+          userId: device.userId,
+          deviceType: device.type,
+          send: (message) => ws.send(JSON.stringify(message)),
+        };
+        hub.register(connection);
 
-      ws.on('message', (raw) => {
-        void (async () => {
-          try {
-            const parsed = RelayMessage.parse(JSON.parse(raw.toString()));
-            if (parsed.kind === 'event' && device.type === 'daemon') {
-              await hub.routeFromDaemon(connection, parsed.sessionId, parsed.event);
-            } else if (parsed.kind === 'command' && device.type === 'browser') {
-              await hub.routeFromBrowser(connection, parsed.sessionId, parsed.command);
+        ws.on('message', (raw) => {
+          void (async () => {
+            try {
+              const parsed = RelayMessage.parse(JSON.parse(raw.toString()));
+              if (parsed.kind === 'event' && device.type === 'daemon') {
+                await hub.routeFromDaemon(connection, parsed.sessionId, parsed.event);
+              } else if (parsed.kind === 'command' && device.type === 'browser') {
+                await hub.routeFromBrowser(connection, parsed.sessionId, parsed.command);
+              }
+            } catch {
+              // Malformed or unauthorized message — silently dropped for v1.
             }
-          } catch {
-            // Malformed or unauthorized message — silently dropped for v1.
-          }
-        })();
-      });
+          })();
+        });
 
-      ws.on('close', () => hub.unregister(device.id));
+        ws.on('close', () => hub.unregister(device.id));
+      } catch {
+        // Unexpected error during setup (e.g., store failure) — close cleanly.
+        ws.close(1011, 'Internal error');
+      }
     })();
   });
 
