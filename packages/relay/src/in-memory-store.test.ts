@@ -130,4 +130,51 @@ describe('InMemoryStore', () => {
 
     expect(await store.getActiveSessionForUser('user-2')).toBeUndefined();
   });
+
+  it('getActiveSessionForUser returns the most recently started non-stopped session', async () => {
+    const store = new InMemoryStore();
+    // Inserted first, started later: a stale non-stopped session (e.g. a
+    // daemon that died without emitting `stopped`) must not win on insertion
+    // order alone.
+    await store.upsertSession({
+      id: 'sess-old',
+      userId: 'user-1',
+      daemonDeviceId: 'device-1',
+      projectPath: '/tmp/old',
+      status: 'running',
+      startedAt: 100,
+    });
+    await store.upsertSession({
+      id: 'sess-new',
+      userId: 'user-1',
+      daemonDeviceId: 'device-2',
+      projectPath: '/tmp/new',
+      status: 'running',
+      startedAt: 200,
+    });
+
+    expect((await store.getActiveSessionForUser('user-1'))?.id).toBe('sess-new');
+  });
+
+  it('getActiveSessionForUser prefers the greater startedAt even when it was created first', async () => {
+    const store = new InMemoryStore();
+    await store.upsertSession({
+      id: 'sess-new',
+      userId: 'user-1',
+      daemonDeviceId: 'device-2',
+      projectPath: '/tmp/new',
+      status: 'running',
+      startedAt: 200,
+    });
+    await store.upsertSession({
+      id: 'sess-old',
+      userId: 'user-1',
+      daemonDeviceId: 'device-1',
+      projectPath: '/tmp/old',
+      status: 'running',
+      startedAt: 100,
+    });
+
+    expect((await store.getActiveSessionForUser('user-1'))?.id).toBe('sess-new');
+  });
 });

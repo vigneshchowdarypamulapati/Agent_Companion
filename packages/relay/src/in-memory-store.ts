@@ -86,13 +86,22 @@ export class InMemoryStore implements Store {
     return this.sessions.get(sessionId);
   }
 
+  /**
+   * The most recently started non-stopped session for the user. Recency, not
+   * Map insertion order, is what decides: a daemon that dies without emitting
+   * a `stopped` event leaves its session non-stopped forever, and returning
+   * that corpse ahead of a genuinely live session would point the browser at
+   * the wrong one. (Reaping such sessions is a separate concern.)
+   */
   async getActiveSessionForUser(userId: string): Promise<SessionRecord | undefined> {
+    let latest: SessionRecord | undefined;
     for (const session of this.sessions.values()) {
-      if (session.userId === userId && session.status !== 'stopped') {
-        return session;
+      if (session.userId !== userId || session.status === 'stopped') continue;
+      if (!latest || session.startedAt > latest.startedAt) {
+        latest = session;
       }
     }
-    return undefined;
+    return latest;
   }
 
   async appendSessionEvent(sessionId: string, event: SessionEvent): Promise<StoredSessionEvent> {
