@@ -1,13 +1,15 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
 import { WebSocket } from 'ws';
+import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
+import type { Socket } from 'node:net';
 import type { Server } from 'node:http';
 import { createRelayServer } from './server.js';
 import { InMemoryStore } from './in-memory-store.js';
 import { InMemoryPubSub } from './in-memory-pubsub.js';
 
-function waitForMessage(ws: WebSocket): Promise<unknown> {
+function waitForMessage(ws: WebSocket): Promise<any> {
   return new Promise((resolve) => {
     ws.once('message', (data) => resolve(JSON.parse(data.toString())));
   });
@@ -18,6 +20,15 @@ function waitForOpen(ws: WebSocket): Promise<void> {
     ws.once('open', () => resolve());
     ws.once('error', reject);
   });
+}
+
+/** Runs the full pairing handshake and returns the device token. */
+async function pair(httpServer: Server, deviceType: 'daemon' | 'browser', deviceName: string): Promise<string> {
+  const codeRes = await request(httpServer).post('/pairing/request-code').send();
+  const redeemRes = await request(httpServer)
+    .post('/pairing/redeem')
+    .send({ code: codeRes.body.code, deviceType, deviceName });
+  return redeemRes.body.token as string;
 }
 
 describe('relay server', () => {
@@ -33,21 +44,12 @@ describe('relay server', () => {
   it('pairs a daemon and a browser, then routes an event and a command between them', async () => {
     const store = new InMemoryStore();
     const pubsub = new InMemoryPubSub();
-    httpServer = createRelayServer({ store, pubsub });
+    httpServer = await createRelayServer({ store, pubsub });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
-    const daemonCodeRes = await request(httpServer).post('/pairing/request-code').send();
-    const daemonRedeemRes = await request(httpServer)
-      .post('/pairing/redeem')
-      .send({ code: daemonCodeRes.body.code, deviceType: 'daemon', deviceName: 'laptop' });
-    const daemonToken = daemonRedeemRes.body.token as string;
-
-    const browserCodeRes = await request(httpServer).post('/pairing/request-code').send();
-    const browserRedeemRes = await request(httpServer)
-      .post('/pairing/redeem')
-      .send({ code: browserCodeRes.body.code, deviceType: 'browser', deviceName: 'phone' });
-    const browserToken = browserRedeemRes.body.token as string;
+    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
+    const browserToken = await pair(httpServer, 'browser', 'phone');
 
     const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
     const browserWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${browserToken}`);
@@ -59,6 +61,8 @@ describe('relay server', () => {
       JSON.stringify({
         kind: 'event',
         sessionId: 'sess-1',
+        // The relay assigns the authoritative seq; the inbound value is ignored.
+        seq: 0,
         event: {
           type: 'session_started',
           sessionId: 'sess-1',
@@ -67,12 +71,20 @@ describe('relay server', () => {
         },
       })
     );
-    expect(await browserReceived).toMatchObject({ kind: 'event', sessionId: 'sess-1' });
+    const forwarded = await browserReceived;
+    expect(forwarded).toMatchObject({ kind: 'event', sessionId: 'sess-1', seq: 1 });
 
-    const eventsRes = await request(httpServer).get('/sessions/sess-1/events');
+    const eventsRes = await request(httpServer)
+      .get('/sessions/sess-1/events')
+      .set('Authorization', `Bearer ${browserToken}`);
+    expect(eventsRes.status).toBe(200);
     expect(eventsRes.body).toHaveLength(1);
+    expect(eventsRes.body[0].seq).toBe(forwarded.seq);
 
-    const sessionRes = await request(httpServer).get('/sessions/sess-1');
+    const sessionRes = await request(httpServer)
+      .get('/sessions/sess-1')
+      .set('Authorization', `Bearer ${daemonToken}`);
+    expect(sessionRes.status).toBe(200);
     expect(sessionRes.body).toMatchObject({ id: 'sess-1', status: 'running' });
 
     const daemonReceived = waitForMessage(daemonWs);
@@ -83,7 +95,7 @@ describe('relay server', () => {
   });
 
   it('rejects a WS connection with an invalid token', async () => {
-    httpServer = createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
@@ -94,18 +106,19 @@ describe('relay server', () => {
   });
 
   it('returns 400 for an invalid pairing redeem request', async () => {
-    httpServer = createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
     const res = await request(httpServer).post('/pairing/redeem').send({ code: '000000' });
     expect(res.status).toBe(400);
   });
 
-  it('returns 404 for an unknown session id', async () => {
-    httpServer = createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+  it('returns 404 for an unknown session id when authenticated', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
-    const res = await request(httpServer).get('/sessions/does-not-exist');
+    const token = await pair(httpServer, 'browser', 'phone');
+    const res = await request(httpServer).get('/sessions/does-not-exist').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(404);
   });
 
@@ -119,7 +132,7 @@ describe('relay server', () => {
       throw new Error('Store connection failed');
     };
 
-    httpServer = createRelayServer({ store: throwingStore, pubsub });
+    httpServer = await createRelayServer({ store: throwingStore, pubsub });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
@@ -134,5 +147,123 @@ describe('relay server', () => {
     // Verify the relay is still responsive by making an HTTP request.
     const res = await request(httpServer).post('/pairing/request-code').send();
     expect(res.status).toBe(201);
+  });
+
+  // --- C1: a malformed WebSocket frame must not crash the process ---
+
+  // FIN=1, RSV1=1 (illegal without a negotiated extension), opcode=1 (text); MASK=1, len=0; 4 mask bytes.
+  const MALFORMED_FRAME = Buffer.from([0xc1, 0x80, 0x00, 0x00, 0x00, 0x00]);
+
+  it('survives a malformed WebSocket frame instead of crashing the process', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    // A tokenless handshake still reaches the frame parser, so this is exploitable pre-auth.
+    const anonWs = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    sockets.push(anonWs);
+    anonWs.on('error', () => {});
+    await new Promise<void>((resolve) => anonWs.once('upgrade', () => resolve()));
+    (anonWs as unknown as { _socket: Socket })._socket.write(MALFORMED_FRAME);
+
+    // And the same frame on a fully established, authenticated connection.
+    const token = await pair(httpServer, 'daemon', 'laptop');
+    const authedWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
+    sockets.push(authedWs);
+    authedWs.on('error', () => {});
+    await waitForOpen(authedWs);
+    (authedWs as unknown as { _socket: Socket })._socket.write(MALFORMED_FRAME);
+    await new Promise<void>((resolve) => authedWs.once('close', () => resolve()));
+
+    // The process must still be alive and serving.
+    const res = await request(httpServer).post('/pairing/request-code').send();
+    expect(res.status).toBe(201);
+  });
+
+  // --- C3: REST session routes require authentication and ownership ---
+
+  it('returns 401 for GET /sessions/:id and /events without an Authorization header', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    expect((await request(httpServer).get('/sessions/sess-1')).status).toBe(401);
+    expect((await request(httpServer).get('/sessions/sess-1/events')).status).toBe(401);
+  });
+
+  it('returns 401 for a malformed or unknown bearer token', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    expect((await request(httpServer).get('/sessions/sess-1').set('Authorization', 'nonsense')).status).toBe(401);
+    expect(
+      (await request(httpServer).get('/sessions/sess-1').set('Authorization', 'Bearer bogus')).status
+    ).toBe(401);
+  });
+
+  it("returns 404 (not 403) when a device from another user asks for a session it doesn't own", async () => {
+    const store = new InMemoryStore();
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
+    const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
+    sockets.push(daemonWs);
+    await waitForOpen(daemonWs);
+    daemonWs.send(
+      JSON.stringify({
+        kind: 'event',
+        sessionId: 'sess-1',
+        seq: 0,
+        event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/secret', at: Date.now() },
+      })
+    );
+    // Wait until the session record exists.
+    await expect
+      .poll(async () => (await store.getSession('sess-1'))?.id, { timeout: 2000 })
+      .toBe('sess-1');
+
+    // A device belonging to a completely different user.
+    const intruderToken = 'intruder-token';
+    await store.createDevice({
+      userId: 'some-other-user',
+      type: 'browser',
+      name: 'attacker',
+      tokenHash: createHash('sha256').update(intruderToken).digest('hex'),
+    });
+
+    const sessionRes = await request(httpServer)
+      .get('/sessions/sess-1')
+      .set('Authorization', `Bearer ${intruderToken}`);
+    expect(sessionRes.status).toBe(404);
+    expect(sessionRes.body).toEqual({ error: 'Unknown session' });
+
+    const eventsRes = await request(httpServer)
+      .get('/sessions/sess-1/events')
+      .set('Authorization', `Bearer ${intruderToken}`);
+    expect(eventsRes.status).toBe(404);
+  });
+
+  // --- diagnostic error frame instead of silent drop ---
+
+  it('replies with a diagnostic error frame when a routed message is rejected', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const browserToken = await pair(httpServer, 'browser', 'phone');
+    const browserWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${browserToken}`);
+    sockets.push(browserWs);
+    await waitForOpen(browserWs);
+
+    const received = waitForMessage(browserWs);
+    browserWs.send(
+      JSON.stringify({
+        kind: 'command',
+        sessionId: 'nope',
+        command: { type: 'pause', sessionId: 'nope' },
+      })
+    );
+    expect(await received).toMatchObject({ kind: 'error', message: expect.stringContaining('Unknown session') });
   });
 });

@@ -1,4 +1,5 @@
 export interface PubSub {
   publish(channel: string, message: unknown): Promise<void>;
-  subscribe(channel: string, handler: (message: unknown) => void): void;
+  subscribe(channel: string, handler: (message: unknown) => void): Promise<void>;
+  unsubscribe(channel: string, handler: (message: unknown) => void): Promise<void>;
 }

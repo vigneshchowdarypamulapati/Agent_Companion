@@ -22,12 +22,26 @@ publicly reachable) to configure the listener.
 - `GET /sessions/:id` — current session status (for reconnect/catch-up).
 - `GET /sessions/:id/events?since=<seq>` — session event history.
 
+The two `/sessions` routes require `Authorization: Bearer <device-token>`
+and only serve sessions belonging to that device's user; anything else
+returns `404 Unknown session` (never `403`, so session ids cannot be
+enumerated). Unauthenticated requests get `401`.
+
 ## WebSocket
 
-Connect to `/ws?token=<device-token>`. Daemons send `{kind:'event', ...}`
+Connect to `/ws?token=<device-token>` (query-param auth, because browsers
+cannot set headers on a WebSocket handshake — REST calls use the
+`Authorization` header instead). Daemons send `{kind:'event', ...}`
 messages; browsers send `{kind:'command', ...}` messages. The server
 routes events to every browser connection for the same user, and commands
-to the specific daemon connection that owns the target session.
+to the daemon connections of the device that owns the target session.
+
+Events forwarded to browsers carry the store-assigned `seq`, so a client
+can reconcile a `?since=<seq>` history fetch against the live stream
+without gaps or duplicates. A message the server refuses to route (bad
+JSON, schema violation, or a failed authorization check) is answered with
+a `{kind:'error', message}` diagnostic frame — this is not part of the
+`RelayMessage` schema and clients may ignore it.
 
 ## Current scope (v1)
 

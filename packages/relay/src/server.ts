@@ -2,7 +2,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { RelayMessage, RedeemPairingRequest } from '@companion/protocol';
-import type { Store } from './store.js';
+import type { Device, Store } from './store.js';
 import type { PubSub } from './pubsub.js';
 import { PairingService } from './pairing.js';
 import { ConnectionHub, type Connection } from './hub.js';
@@ -13,14 +13,27 @@ function asyncHandler(fn: (req: Request, res: Response) => Promise<void> | void)
   };
 }
 
+/**
+ * Extracts a device token from the `Authorization: Bearer <token>` header and verifies it.
+ * REST callers can set headers, so unlike the WS handshake they do not use query-param auth.
+ */
+async function authenticate(req: Request, pairing: PairingService): Promise<Device | undefined> {
+  const header = req.header('authorization');
+  if (!header) return undefined;
+  const [scheme, token] = header.split(' ');
+  if (!token || scheme.toLowerCase() !== 'bearer') return undefined;
+  return pairing.verifyToken(token);
+}
+
 export interface RelayServerOptions {
   store: Store;
   pubsub: PubSub;
 }
 
-export function createRelayServer({ store, pubsub }: RelayServerOptions): Server {
+export async function createRelayServer({ store, pubsub }: RelayServerOptions): Promise<Server> {
   const pairing = new PairingService(store);
   const hub = new ConnectionHub(store, pubsub);
+  await hub.start();
 
   const app = express();
   app.use(express.json());
@@ -49,8 +62,15 @@ export function createRelayServer({ store, pubsub }: RelayServerOptions): Server
   app.get(
     '/sessions/:id',
     asyncHandler(async (req, res) => {
+      const device = await authenticate(req, pairing);
+      if (!device) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
       const session = await store.getSession(req.params.id);
-      if (!session) {
+      // Same response whether the session is missing or owned by someone else, so a
+      // non-owner cannot enumerate session ids.
+      if (!session || session.userId !== device.userId) {
         res.status(404).json({ error: 'Unknown session' });
         return;
       }
@@ -61,6 +81,16 @@ export function createRelayServer({ store, pubsub }: RelayServerOptions): Server
   app.get(
     '/sessions/:id/events',
     asyncHandler(async (req, res) => {
+      const device = await authenticate(req, pairing);
+      if (!device) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      const session = await store.getSession(req.params.id);
+      if (!session || session.userId !== device.userId) {
+        res.status(404).json({ error: 'Unknown session' });
+        return;
+      }
       const sinceSeq = req.query.since ? Number(req.query.since) : undefined;
       const events = await store.getSessionEvents(req.params.id, sinceSeq);
       res.status(200).json(events);
@@ -75,7 +105,14 @@ export function createRelayServer({ store, pubsub }: RelayServerOptions): Server
   const httpServer = createServer(app);
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
 
+  // An 'error' event with no listener is an uncaught exception, which terminates the process.
+  wss.on('error', () => {});
+
   wss.on('connection', (ws, req) => {
+    // Attached first, before any async work, so a malformed frame arriving immediately after
+    // the handshake cannot crash the process. The 'close' handler still fires afterwards.
+    ws.on('error', () => {});
+
     void (async () => {
       try {
         const url = new URL(req.url ?? '', 'http://localhost');
@@ -107,13 +144,20 @@ export function createRelayServer({ store, pubsub }: RelayServerOptions): Server
               } else if (parsed.kind === 'command' && device.type === 'browser') {
                 await hub.routeFromBrowser(connection, parsed.sessionId, parsed.command);
               }
-            } catch {
-              // Malformed or unauthorized message — silently dropped for v1.
+            } catch (err) {
+              // Diagnostic frame — deliberately not part of the RelayMessage schema.
+              const message = err instanceof Error ? err.message : String(err);
+              try {
+                ws.send(JSON.stringify({ kind: 'error', message }));
+              } catch {
+                // Socket already gone; nothing useful to do, and throwing here would
+                // surface as an unhandled rejection.
+              }
             }
           })();
         });
 
-        ws.on('close', () => hub.unregister(device.id));
+        ws.on('close', () => hub.unregister(connection));
       } catch {
         // Unexpected error during setup (e.g., store failure) — close cleanly.
         ws.close(1011, 'Internal error');

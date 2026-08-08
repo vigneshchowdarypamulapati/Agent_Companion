@@ -9,9 +9,18 @@ export class InMemoryPubSub implements PubSub {
     }
   }
 
-  subscribe(channel: string, handler: (message: unknown) => void): void {
+  async subscribe(channel: string, handler: (message: unknown) => void): Promise<void> {
     const set = this.handlers.get(channel) ?? new Set();
     set.add(handler);
     this.handlers.set(channel, set);
+  }
+
+  async unsubscribe(channel: string, handler: (message: unknown) => void): Promise<void> {
+    const set = this.handlers.get(channel);
+    if (!set) return;
+    set.delete(handler);
+    if (set.size === 0) {
+      this.handlers.delete(channel);
+    }
   }
 }
