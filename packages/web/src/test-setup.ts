@@ -7,7 +7,16 @@ import '@testing-library/jest-dom/vitest';
 // rather than reimplementing the Storage interface (which risks diverging
 // from real behavior — e.g. a naive `value || null` getItem incorrectly
 // returns null for a stored empty string).
-Object.defineProperty(globalThis, 'localStorage', {
-  value: (globalThis as unknown as { jsdom: { window: { localStorage: Storage } } }).jsdom.window.localStorage,
-  configurable: true,
-});
+//
+// Only applies when running under the jsdom environment (globalThis.jsdom is
+// set by vitest's jsdom environment setup). Test files that override to the
+// node environment (e.g. relay-connection.test.ts, via a
+// `// @vitest-environment node` comment) don't have globalThis.jsdom at all,
+// and don't use localStorage, so this is a no-op there rather than a crash.
+const jsdomGlobal = (globalThis as unknown as { jsdom?: { window: { localStorage: Storage } } }).jsdom;
+if (jsdomGlobal) {
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: jsdomGlobal.window.localStorage,
+    configurable: true,
+  });
+}
