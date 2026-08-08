@@ -37,36 +37,44 @@ async function main(): Promise<void> {
   });
 
   if (RELAY_URL) {
-    const { token } = await getOrCreateDeviceToken({
-      relayHttpUrl: relayHttpUrl(RELAY_URL),
-      deviceName: DEVICE_NAME,
-      tokenPath: DEVICE_TOKEN_PATH,
-    });
+    try {
+      const { token } = await getOrCreateDeviceToken({
+        relayHttpUrl: relayHttpUrl(RELAY_URL),
+        deviceName: DEVICE_NAME,
+        tokenPath: DEVICE_TOKEN_PATH,
+      });
 
-    relayClient = new RelayClient({
-      url: RELAY_URL,
-      token,
-      onLog: (message) => console.log(`[relay] ${message}`),
-      onCommand: (command) => {
-        void dispatchCommand(manager, command).catch((err) => {
-          const message = err instanceof Error ? err.message : String(err);
-          if (!('sessionId' in command)) {
-            console.error(`Relay command failed: ${message}`);
-            return;
-          }
-          const errorEvent: SessionEvent = {
-            type: 'error',
-            sessionId: command.sessionId,
-            message,
-            at: Date.now(),
-          };
-          eventLog.push(errorEvent);
-          relayClient?.sendEvent(command.sessionId, errorEvent);
-        });
-      },
-    });
-    relayClient.connect();
-    console.log(`Connecting to relay at ${RELAY_URL}`);
+      relayClient = new RelayClient({
+        url: RELAY_URL,
+        token,
+        onLog: (message) => console.log(`[relay] ${message}`),
+        onCommand: (command) => {
+          void dispatchCommand(manager, command).catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            if (!('sessionId' in command)) {
+              console.error(`Relay command failed: ${message}`);
+              return;
+            }
+            const errorEvent: SessionEvent = {
+              type: 'error',
+              sessionId: command.sessionId,
+              message,
+              at: Date.now(),
+            };
+            eventLog.push(errorEvent);
+            relayClient?.sendEvent(command.sessionId, errorEvent);
+          });
+        },
+      });
+      relayClient.connect();
+      console.log(`Connecting to relay at ${RELAY_URL}`);
+    } catch (err) {
+      console.error(
+        `Failed to connect to the relay (local HTTP control surface remains available): ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
   }
 }
 
