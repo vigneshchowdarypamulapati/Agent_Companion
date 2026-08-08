@@ -1,4 +1,13 @@
+import { afterEach } from 'vitest';
+import { cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
+
+// vitest config lacks `test.globals: true`, so @testing-library/react's automatic
+// post-test cleanup doesn't register. Register it globally here so every test file
+// using render() automatically cleans up the DOM after each test.
+afterEach(() => {
+  cleanup();
+});
 
 // Node ships its own native `localStorage` global, which wins precedence over
 // vitest's jsdom environment in this Node/vitest version combination — vitest

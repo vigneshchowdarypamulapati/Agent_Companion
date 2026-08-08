@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import PairingScreen from './PairingScreen';
 import * as pairingApi from './api/pairing';
@@ -9,7 +9,6 @@ describe('PairingScreen', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
-    cleanup();
   });
 
   it('generates a pairing code and displays it', async () => {
