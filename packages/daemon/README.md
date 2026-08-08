@@ -51,6 +51,6 @@ re-pairing. It then opens `wss://<relay>/ws?token=<token>` and reconnects
 with exponential backoff (500ms, doubling, capped at 10s) on any disconnect.
 
 A command the relay routes to this daemon that fails (e.g. references an
-unknown or already-stopped session) is turned into an `error` `SessionEvent`
+unknown or already-stopped session) is turned into a `command_failed` `SessionEvent`
 and sent back over the same connection, so a connected browser always sees
 why nothing happened rather than silence.
