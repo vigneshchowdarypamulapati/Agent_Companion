@@ -65,6 +65,26 @@ describe('useRelayConnection', () => {
     expect(fake.sentCommands).toEqual([{ sessionId: 'sess-1', command: { type: 'pause', sessionId: 'sess-1' } }]);
   });
 
+  it('passes onLog through to the connection options', () => {
+    const fake = createFakeConnection();
+    const logs: string[] = [];
+    renderHook(() =>
+      useRelayConnection({
+        url: 'ws://x',
+        token: 't',
+        onEvent: () => {},
+        onLog: (message) => logs.push(message),
+        createConnection: fake.factory,
+      })
+    );
+
+    act(() => {
+      fake.getOptions().onLog?.('Connected to relay');
+    });
+
+    expect(logs).toEqual(['Connected to relay']);
+  });
+
   it('closes the connection on unmount', () => {
     const fake = createFakeConnection();
     const { unmount } = renderHook(() =>

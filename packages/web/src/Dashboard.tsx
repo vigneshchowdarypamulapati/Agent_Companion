@@ -42,7 +42,27 @@ export default function Dashboard({ token, onUnauthorized }: DashboardProps) {
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [lastSeq, setLastSeq] = useState(0);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | undefined>();
   const isFirstConnect = useRef(true);
+  // Mirror of `session` that is always current the instant it changes, rather
+  // than at the next render. handleLiveEvent needs to read the tracked session
+  // id from inside a stable ([]-dependency) callback to filter out events that
+  // belong to a *different* session (the relay broadcasts every one of a
+  // user's events to every one of their browser connections, unscoped — see
+  // packages/relay/src/hub.ts's dispatchLocal), and several live events can
+  // arrive between two renders. Same ref-instead-of-dependency reasoning as
+  // onUnauthorizedRef below and onEventRef in use-relay-connection.ts.
+  const sessionRef = useRef<CurrentSession | undefined>(undefined);
+  // False while an initial (or reconnect re-discovery) load is in flight: live
+  // events that arrive during that window are staged here instead of being
+  // appended, so the history fetch resolving can't silently clobber them. A
+  // ref, not state — it's a transient staging area that must be readable from
+  // inside a stable callback and must not trigger renders of its own.
+  const loadedRef = useRef(false);
+  const pendingLiveEventsRef = useRef<LiveEvent[]>([]);
+  // Invalidates in-flight loads: bumped on unmount/token change and by each
+  // new load, so a superseded load never writes stale state.
+  const loadGenerationRef = useRef(0);
   // onUnauthorized is deliberately not a dependency of the mount effect below:
   // App.tsx passes a fresh inline closure on every render, and depending on
   // it directly would re-run the initial session/history fetch any time that
@@ -52,52 +72,110 @@ export default function Dashboard({ token, onUnauthorized }: DashboardProps) {
   const onUnauthorizedRef = useRef(onUnauthorized);
   onUnauthorizedRef.current = onUnauthorized;
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const active = await getActiveSession(token);
-        if (cancelled) return;
-        if (active) {
-          setSession({ id: active.id, projectPath: active.projectPath, status: active.status });
-          const history = await getSessionEvents(token, active.id);
-          if (cancelled) return;
-          setEvents(history.map((h) => h.event));
-          if (history.length > 0) setLastSeq(history[history.length - 1].seq);
+  const setCurrentSession = useCallback((next: CurrentSession | undefined) => {
+    sessionRef.current = next;
+    setSession(next);
+  }, []);
+
+  const handleLiveEvent = useCallback(
+    (message: LiveEvent) => {
+      if (!loadedRef.current) {
+        pendingLiveEventsRef.current.push(message);
+        return;
+      }
+      // session_started is never filtered by session id: establishing a new
+      // current session (with a new id) is its entire purpose.
+      if (message.event.type === 'session_started') {
+        setLastSeq((prev) => Math.max(prev, message.seq));
+        setCurrentSession({ id: message.sessionId, projectPath: message.event.projectPath, status: 'running' });
+        setEvents([message.event]);
+        return;
+      }
+      const current = sessionRef.current;
+      if (current && message.sessionId !== current.id) {
+        // Another of this user's daemons; not the session this view tracks.
+        return;
+      }
+      setLastSeq((prev) => Math.max(prev, message.seq));
+      setEvents((prev) => [...prev, message.event]);
+      if (current) {
+        const nextStatus = STATUS_BY_EVENT_TYPE[message.event.type] ?? current.status;
+        if (nextStatus !== current.status) {
+          setCurrentSession({ ...current, status: nextStatus });
         }
-      } catch (err) {
-        if (err instanceof UnauthorizedError) {
-          onUnauthorizedRef.current();
-          return;
-        }
-        throw err;
-      } finally {
-        if (!cancelled) setLoaded(true);
+      }
+    },
+    [setCurrentSession]
+  );
+
+  const flushBufferedLiveEvents = useCallback(() => {
+    const buffered = pendingLiveEventsRef.current;
+    if (buffered.length === 0) return;
+    pendingLiveEventsRef.current = [];
+    for (const message of buffered) {
+      handleLiveEvent(message);
+    }
+  }, [handleLiveEvent]);
+
+  /**
+   * Full session discovery: find the active session, load its history, and
+   * merge in anything that arrived live while those two REST calls were in
+   * flight. Used both on mount and on reconnect when this view isn't tracking
+   * a session yet (the session may have started while the socket was down —
+   * the session_started event that would have told us was missed).
+   */
+  const loadSession = useCallback(async () => {
+    const generation = (loadGenerationRef.current += 1);
+    loadedRef.current = false;
+    try {
+      const active = await getActiveSession(token);
+      if (generation !== loadGenerationRef.current) return;
+      if (active) {
+        setCurrentSession({ id: active.id, projectPath: active.projectPath, status: active.status });
+        const history = await getSessionEvents(token, active.id);
+        if (generation !== loadGenerationRef.current) return;
+        const historySeq = history.length > 0 ? history[history.length - 1].seq : 0;
+        // Anything buffered with a seq at or below the history's last seq is
+        // already part of the snapshot we just fetched; anything above it
+        // arrived after and would otherwise be lost to the overwrite.
+        const buffered = pendingLiveEventsRef.current;
+        pendingLiveEventsRef.current = [];
+        const late = buffered.filter((message) => message.seq > historySeq);
+        setEvents([...history.map((h) => h.event), ...late.map((message) => message.event)]);
+        setLastSeq(late.reduce((max, message) => Math.max(max, message.seq), historySeq));
+      }
+      setLoadError(undefined);
+    } catch (err) {
+      if (generation !== loadGenerationRef.current) return;
+      if (err instanceof UnauthorizedError) {
+        onUnauthorizedRef.current();
+        return;
+      }
+      // Anything else (relay unreachable, 500, DNS failure) must be visible:
+      // silently falling through here is indistinguishable from a healthy
+      // relay with nothing running.
+      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (generation === loadGenerationRef.current) {
+        loadedRef.current = true;
+        setLoaded(true);
+        flushBufferedLiveEvents();
       }
     }
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [token]);
+  }, [token, setCurrentSession, flushBufferedLiveEvents]);
 
-  const handleLiveEvent = useCallback((message: LiveEvent) => {
-    setLastSeq((prev) => Math.max(prev, message.seq));
-    if (message.event.type === 'session_started') {
-      setSession({ id: message.sessionId, projectPath: message.event.projectPath, status: 'running' });
-      setEvents([message.event]);
-      return;
-    }
-    setEvents((prev) => [...prev, message.event]);
-    setSession((prev) =>
-      prev ? { ...prev, status: STATUS_BY_EVENT_TYPE[message.event.type] ?? prev.status } : prev
-    );
-  }, []);
+  useEffect(() => {
+    void loadSession();
+    return () => {
+      loadGenerationRef.current += 1;
+    };
+  }, [loadSession]);
 
   const { connected, sendCommand } = useRelayConnection({
     url: RELAY_WS_URL,
     token,
     onEvent: handleLiveEvent,
+    onLog: (message) => console.log('[relay]', message),
   });
 
   useEffect(() => {
@@ -106,10 +184,16 @@ export default function Dashboard({ token, onUnauthorized }: DashboardProps) {
       isFirstConnect.current = false;
       return;
     }
-    if (!session) return;
     // Deliberately reacting only to `connected` flipping true again after
     // having connected once before — session/lastSeq/token are read fresh
     // via closure, not tracked as deps, so this doesn't re-run on every event.
+    if (!session) {
+      // Nothing to fill a gap in: a session may have started (and its
+      // session_started event been missed) while the socket was down, so
+      // re-run full discovery rather than assuming nothing changed.
+      void loadSession();
+      return;
+    }
     void (async () => {
       try {
         const gap = await getSessionEvents(token, session.id, lastSeq);
@@ -135,7 +219,19 @@ export default function Dashboard({ token, onUnauthorized }: DashboardProps) {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 space-y-4 max-w-lg mx-auto">
-      <SessionStatusBar status={session?.status ?? 'none'} projectPath={session?.projectPath} connected={connected} />
+      {loadError && (
+        <p role="alert" className="bg-red-900 text-red-100 rounded-md px-4 py-3">
+          Couldn't reach the relay: {loadError}
+        </p>
+      )}
+
+      {(!loadError || session) && (
+        <SessionStatusBar
+          status={session?.status ?? 'none'}
+          projectPath={session?.projectPath}
+          connected={connected}
+        />
+      )}
 
       {session && permissionRequest && (
         <PermissionPrompt

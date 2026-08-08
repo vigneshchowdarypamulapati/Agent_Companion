@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import Dashboard from './Dashboard';
 import * as sessionsApi from './api/sessions';
@@ -195,5 +195,106 @@ describe('Dashboard', () => {
 
     expect(await screen.findByText('missed while offline')).toBeInTheDocument();
     expect(sessionsApi.getSessionEvents).toHaveBeenCalledWith('tok-1', 'sess-1', 0);
+  });
+
+  // Finding 1
+  it('re-runs session discovery after reconnecting with no tracked session', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession')
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(activeSession);
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([]);
+    const mock = mockUseRelayConnection();
+
+    const { rerender } = render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+    await screen.findByText('No Active Sessions');
+
+    mock.setConnected(false);
+    rerender(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+    mock.setConnected(true);
+    rerender(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+
+    // The session_started event that would have populated the view was missed
+    // while the socket was down, so the reconnect must re-discover it.
+    expect(await screen.findByText('Running')).toBeInTheDocument();
+    expect(screen.getByText('/tmp/project')).toBeInTheDocument();
+  });
+
+  // Finding 2
+  it('keeps a live event that arrives before the initial history load resolves', async () => {
+    let resolveActive: (value: sessionsApi.SessionRecord | undefined) => void = () => {};
+    const activePromise = new Promise<sessionsApi.SessionRecord | undefined>((resolve) => {
+      resolveActive = resolve;
+    });
+    vi.spyOn(sessionsApi, 'getActiveSession').mockReturnValue(activePromise);
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([
+      {
+        seq: 1,
+        sessionId: 'sess-1',
+        event: { type: 'assistant_text', sessionId: 'sess-1', text: 'from history', at: 1 },
+        createdAt: 1,
+      },
+    ]);
+    const mock = mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+
+    // The socket is already delivering events while the two REST calls are
+    // still in flight — this one must survive the history overwrite.
+    act(() => {
+      mock.emit({
+        sessionId: 'sess-1',
+        seq: 2,
+        event: { type: 'assistant_text', sessionId: 'sess-1', text: 'live before load', at: 2 },
+      });
+    });
+
+    await act(async () => {
+      resolveActive(activeSession);
+      await activePromise;
+    });
+
+    expect(await screen.findByText('live before load')).toBeInTheDocument();
+    expect(screen.getByText('from history')).toBeInTheDocument();
+  });
+
+  // Finding 3
+  it('shows a distinct error state when the initial load fails', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockRejectedValue(
+      new Error('Failed to fetch active session: HTTP 500')
+    );
+    mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Failed to fetch active session: HTTP 500');
+    expect(screen.queryByText('No Active Sessions')).not.toBeInTheDocument();
+  });
+
+  // Finding 5
+  it('ignores live events belonging to a different session', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(activeSession);
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([]);
+    const mock = mockUseRelayConnection();
+
+    render(<Dashboard token="tok-1" onUnauthorized={() => {}} />);
+    await screen.findByText('Running');
+
+    // The relay broadcasts every one of a user's events to every browser
+    // connection, so a second paired daemon's session can show up here.
+    mock.emit({
+      sessionId: 'sess-other',
+      seq: 2,
+      event: { type: 'stopped', sessionId: 'sess-other', at: 2 },
+    });
+    mock.emit({
+      sessionId: 'sess-1',
+      seq: 3,
+      event: { type: 'assistant_text', sessionId: 'sess-1', text: 'mine', at: 3 },
+    });
+
+    expect(await screen.findByText('mine')).toBeInTheDocument();
+    expect(screen.queryByText('Session stopped')).not.toBeInTheDocument();
+    expect(screen.getByText('Running')).toBeInTheDocument();
   });
 });

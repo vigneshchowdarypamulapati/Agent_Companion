@@ -41,7 +41,7 @@ export async function getSessionEvents(
   sessionId: string,
   sinceSeq?: number
 ): Promise<StoredSessionEvent[]> {
-  const url = new URL(`${RELAY_HTTP_URL}/sessions/${sessionId}/events`);
+  const url = new URL(`${RELAY_HTTP_URL}/sessions/${encodeURIComponent(sessionId)}/events`);
   if (sinceSeq !== undefined) {
     url.searchParams.set('since', String(sinceSeq));
   }

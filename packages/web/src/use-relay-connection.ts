@@ -13,6 +13,14 @@ export interface UseRelayConnectionOptions {
   token: string;
   onEvent: (message: LiveEvent) => void;
   /**
+   * Diagnostic sink for the connection's own lifecycle messages (connect,
+   * error, unparseable frame, dropped command). Without it a deployed build
+   * has no signal at all when the socket can't come up — e.g. a mixed-content
+   * ws:// URL on an https:// page. Read via a ref, like onEvent, so a caller
+   * passing a fresh inline closure each render doesn't force a reconnect.
+   */
+  onLog?: (message: string) => void;
+  /**
    * Overridable purely for testing — production code never passes this and
    * always gets a real RelayConnection. Intentionally excluded from the
    * mount effect's dependency array below: it's a fixed injection seam, not
@@ -27,11 +35,13 @@ export interface UseRelayConnectionResult {
 }
 
 export function useRelayConnection(options: UseRelayConnectionOptions): UseRelayConnectionResult {
-  const { url, token, onEvent, createConnection = (opts) => new RelayConnection(opts) } = options;
+  const { url, token, onEvent, onLog, createConnection = (opts) => new RelayConnection(opts) } = options;
   const [connected, setConnected] = useState(false);
   const connectionRef = useRef<Pick<RelayConnection, 'connect' | 'close' | 'sendCommand'> | undefined>(undefined);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
+  const onLogRef = useRef(onLog);
+  onLogRef.current = onLog;
 
   useEffect(() => {
     const connection = createConnection({
@@ -40,6 +50,7 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
       onEvent: (message) => onEventRef.current(message),
       onOpen: () => setConnected(true),
       onClose: () => setConnected(false),
+      onLog: (message) => onLogRef.current?.(message),
     });
     connectionRef.current = connection;
     connection.connect();
