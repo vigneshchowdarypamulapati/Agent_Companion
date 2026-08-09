@@ -68,7 +68,10 @@ export async function createRelayServer({ store, pubsub }: RelayServerOptions): 
         return;
       }
       const sessions = await store.getActiveSessionsForUser(device.userId);
-      const session = sessions.length > 0 ? sessions[0] : undefined;
+      const session = sessions.reduce<(typeof sessions)[number] | undefined>(
+        (latest, s) => (!latest || s.startedAt > latest.startedAt ? s : latest),
+        undefined
+      );
       if (!session) {
         res.status(404).json({ error: 'No active session' });
         return;

@@ -298,6 +298,52 @@ describe('relay server', () => {
     expect(res.body).toMatchObject({ id: 'sess-1', status: 'running' });
   });
 
+  it('returns the most recently started session when multiple are active', async () => {
+    const store = new InMemoryStore();
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
+    const browserToken = await pair(httpServer, 'browser', 'phone');
+
+    const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
+    sockets.push(daemonWs);
+    await waitForOpen(daemonWs);
+
+    // Create first session at time 1000
+    const now = Date.now();
+    daemonWs.send(
+      JSON.stringify({
+        kind: 'event',
+        sessionId: 'sess-1',
+        seq: 0,
+        event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project1', at: now },
+      })
+    );
+    await expect
+      .poll(async () => (await store.getSession('sess-1'))?.id, { timeout: 2000 })
+      .toBe('sess-1');
+
+    // Create second session at time 2000 (later)
+    daemonWs.send(
+      JSON.stringify({
+        kind: 'event',
+        sessionId: 'sess-2',
+        seq: 1,
+        event: { type: 'session_started', sessionId: 'sess-2', projectPath: '/tmp/project2', at: now + 1000 },
+      })
+    );
+    await expect
+      .poll(async () => (await store.getSession('sess-2'))?.id, { timeout: 2000 })
+      .toBe('sess-2');
+
+    const res = await request(httpServer).get('/sessions/active').set('Authorization', `Bearer ${browserToken}`);
+    expect(res.status).toBe(200);
+    // Should return sess-2 because it has the greater startedAt
+    expect(res.body).toMatchObject({ id: 'sess-2', status: 'running' });
+  });
+
   it('returns 404 when there is no active session', async () => {
     httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
