@@ -8,6 +8,7 @@ export interface SessionRecord {
   projectPath: string;
   status: SessionStatus;
   startedAt: number;
+  lastEventAt: number;
 }
 
 export interface StoredSessionEvent {
@@ -24,16 +25,29 @@ export class UnauthorizedError extends Error {
   }
 }
 
-export async function getActiveSession(token: string): Promise<SessionRecord | undefined> {
+export async function getActiveSessions(token: string): Promise<SessionRecord[]> {
   const res = await fetch(`${RELAY_HTTP_URL}/sessions/active`, {
     headers: { authorization: `Bearer ${token}` },
   });
-  if (res.status === 404) return undefined;
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
-    throw new Error(`Failed to fetch active session: HTTP ${res.status}`);
+    throw new Error(`Failed to fetch active sessions: HTTP ${res.status}`);
   }
-  return (await res.json()) as SessionRecord;
+  return (await res.json()) as SessionRecord[];
+}
+
+export async function dismissSession(token: string, sessionId: string): Promise<void> {
+  const res = await fetch(`${RELAY_HTTP_URL}/sessions/${encodeURIComponent(sessionId)}/dismiss`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (res.status === 409) {
+    throw new Error('Session is not stopped yet');
+  }
+  if (!res.ok) {
+    throw new Error(`Failed to dismiss session: HTTP ${res.status}`);
+  }
 }
 
 export async function getSessionEvents(

@@ -1,28 +1,52 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { getActiveSession, getSessionEvents, UnauthorizedError } from './sessions';
+import { getActiveSessions, getSessionEvents, dismissSession, UnauthorizedError } from './sessions';
 
 describe('sessions API', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('getActiveSession returns the session on 200', async () => {
+  it('getActiveSessions returns the array on 200', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ id: 'sess-1', status: 'running' }) }))
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => [{ id: 'sess-1', status: 'running' }] }))
     );
-    const result = await getActiveSession('tok-1');
-    expect(result).toMatchObject({ id: 'sess-1' });
+    const result = await getActiveSessions('tok-1');
+    expect(result).toEqual([{ id: 'sess-1', status: 'running' }]);
   });
 
-  it('getActiveSession returns undefined on 404', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) })));
-    expect(await getActiveSession('tok-1')).toBeUndefined();
+  it('getActiveSessions returns an empty array on 200 with no sessions', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => [] })));
+    expect(await getActiveSessions('tok-1')).toEqual([]);
   });
 
-  it('getActiveSession throws UnauthorizedError on 401', async () => {
+  it('getActiveSessions throws UnauthorizedError on 401', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) })));
-    await expect(getActiveSession('bad-token')).rejects.toBeInstanceOf(UnauthorizedError);
+    await expect(getActiveSessions('bad-token')).rejects.toBeInstanceOf(UnauthorizedError);
+  });
+
+  it('dismissSession resolves on 200', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })));
+    await expect(dismissSession('tok-1', 'sess-1')).resolves.toBeUndefined();
+  });
+
+  it('dismissSession throws on 409', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 409, json: async () => ({}) })));
+    await expect(dismissSession('tok-1', 'sess-1')).rejects.toThrow('not stopped');
+  });
+
+  it('dismissSession throws UnauthorizedError on 401', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) })));
+    await expect(dismissSession('bad-token', 'sess-1')).rejects.toBeInstanceOf(UnauthorizedError);
+  });
+
+  it('dismissSession URL-encodes the session id', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toContain('/sessions/sess%20with%20space/dismiss');
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await dismissSession('tok-1', 'sess with space');
   });
 
   it('getSessionEvents includes the since query param when provided', async () => {
