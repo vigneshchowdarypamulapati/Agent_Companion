@@ -68,15 +68,7 @@ export async function createRelayServer({ store, pubsub }: RelayServerOptions): 
         return;
       }
       const sessions = await store.getActiveSessionsForUser(device.userId);
-      const session = sessions.reduce<(typeof sessions)[number] | undefined>(
-        (latest, s) => (!latest || s.startedAt > latest.startedAt ? s : latest),
-        undefined
-      );
-      if (!session) {
-        res.status(404).json({ error: 'No active session' });
-        return;
-      }
-      res.status(200).json(session);
+      res.status(200).json(sessions);
     })
   );
 
@@ -115,6 +107,29 @@ export async function createRelayServer({ store, pubsub }: RelayServerOptions): 
       const sinceSeq = req.query.since ? Number(req.query.since) : undefined;
       const events = await store.getSessionEvents(req.params.id, sinceSeq);
       res.status(200).json(events);
+    })
+  );
+
+  app.post(
+    '/sessions/:id/dismiss',
+    asyncHandler(async (req, res) => {
+      const device = await authenticate(req, pairing);
+      if (!device) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      const result = await store.dismissSession(req.params.id, device.userId);
+      if (result === 'not_found' || result === 'forbidden') {
+        // Same response for both, like GET /sessions/:id: a non-owner cannot
+        // distinguish "doesn't exist" from "exists but isn't theirs."
+        res.status(404).json({ error: 'Unknown session' });
+        return;
+      }
+      if (result === 'not_stopped') {
+        res.status(409).json({ error: 'Session is not stopped' });
+        return;
+      }
+      res.status(200).json({ ok: true });
     })
   );
 
