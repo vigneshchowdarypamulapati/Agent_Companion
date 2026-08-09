@@ -6,7 +6,7 @@ export interface SessionStatusBarProps {
   connected: boolean;
 }
 
-const STATUS_LABEL: Record<SessionStatus, string> = {
+export const STATUS_LABEL: Record<SessionStatus, string> = {
   running: 'Running',
   waiting_permission: 'Waiting for permission',
   paused: 'Paused',
