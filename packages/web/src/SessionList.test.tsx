@@ -85,7 +85,7 @@ describe('SessionList', () => {
     expect(screen.getAllByRole('button', { name: 'Dismiss' })).toHaveLength(1);
   });
 
-  it('removes the card after a successful dismiss', async () => {
+  it('calls dismissSession with the session id', async () => {
     const { dismissSession } = mockSessions({
       sessions: [{ id: 'sess-a', projectPath: '/tmp/a', status: 'stopped', lastEventAt: 1 }],
     });

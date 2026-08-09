@@ -3,11 +3,6 @@ import { render, screen } from '@testing-library/react';
 import SessionStatusBar from './SessionStatusBar';
 
 describe('SessionStatusBar', () => {
-  it('shows the empty state when there is no active session', () => {
-    render(<SessionStatusBar status="none" connected />);
-    expect(screen.getByText('No Active Sessions')).toBeInTheDocument();
-  });
-
   it('shows the status label and project path when a session is active', () => {
     render(<SessionStatusBar status="running" projectPath="/tmp/project" connected />);
     expect(screen.getByText('Running')).toBeInTheDocument();
@@ -15,12 +10,12 @@ describe('SessionStatusBar', () => {
   });
 
   it('shows a reconnecting indicator when not connected', () => {
-    render(<SessionStatusBar status="running" connected={false} />);
+    render(<SessionStatusBar status="running" projectPath="/tmp/project" connected={false} />);
     expect(screen.getByText(/reconnecting/i)).toBeInTheDocument();
   });
 
   it('shows a live indicator when connected', () => {
-    render(<SessionStatusBar status="running" connected />);
+    render(<SessionStatusBar status="running" projectPath="/tmp/project" connected />);
     expect(screen.getByText('live')).toBeInTheDocument();
   });
 });

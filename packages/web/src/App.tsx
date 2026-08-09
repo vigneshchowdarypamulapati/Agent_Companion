@@ -1,10 +1,20 @@
 import { useState } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router';
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router';
 import PairingScreen from './PairingScreen';
 import SessionList from './SessionList';
 import SessionDetail from './SessionDetail';
 import { SessionsProvider } from './SessionsProvider';
 import { clearStoredCredentials, getStoredCredentials } from './storage';
+
+// React Router reuses the same SessionDetail instance across an id-only
+// navigation (/sessions/A -> /sessions/B), which would let stale
+// events/lastSeq/historyLoaded state from the old session persist for a
+// moment after `summary` (read fresh from context) has already flipped to
+// the new one. Keying on `id` forces a remount on every id change.
+function KeyedSessionDetail(props: { token: string; onUnauthorized: () => void }) {
+  const { id } = useParams<{ id: string }>();
+  return <SessionDetail key={id} {...props} />;
+}
 
 export default function App() {
   const [credentials, setCredentials] = useState(() => getStoredCredentials());
@@ -25,8 +35,9 @@ export default function App() {
           <Route path="/" element={<SessionList />} />
           <Route
             path="/sessions/:id"
-            element={<SessionDetail token={credentials.token} onUnauthorized={handleUnauthorized} />}
+            element={<KeyedSessionDetail token={credentials.token} onUnauthorized={handleUnauthorized} />}
           />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     </SessionsProvider>

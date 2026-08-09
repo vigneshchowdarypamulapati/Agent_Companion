@@ -28,10 +28,16 @@ publicly reachable) to configure the listener.
 - `GET /sessions/:id` — current session status (for reconnect/catch-up).
 - `GET /sessions/:id/events?since=<seq>` — session event history.
 
-The two `/sessions` routes require `Authorization: Bearer <device-token>`
-and only serve sessions belonging to that device's user; anything else
-returns `404 Unknown session` (never `403`, so session ids cannot be
-enumerated). Unauthenticated requests get `401`.
+All four `/sessions*` routes require `Authorization: Bearer <device-token>`;
+unauthenticated requests get `401`. `GET /sessions/active` isn't scoped to a
+single session id, so it always succeeds for an authenticated caller:
+`200` with a JSON array, empty when the caller has no active sessions.
+`GET /sessions/:id`, `GET /sessions/:id/events`, and
+`POST /sessions/:id/dismiss` only serve sessions belonging to that device's
+user; anything else (missing, or owned by someone else) returns
+`404 Unknown session` (never `403`, so session ids cannot be enumerated).
+`POST /sessions/:id/dismiss` additionally returns `409` if the session
+exists but hasn't stopped yet.
 
 ## WebSocket
 

@@ -46,4 +46,18 @@ describe('App', () => {
 
     expect(await screen.findByText('No active sessions.')).toBeInTheDocument();
   });
+
+  it('redirects an unknown path to the session list', async () => {
+    storeCredentials({ token: 'tok-1', deviceId: 'dev-1' });
+    vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
+    vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
+      connected: true,
+      sendCommand: vi.fn(),
+    });
+    window.history.pushState({}, '', '/some/unknown/path');
+
+    render(<App />);
+
+    expect(await screen.findByText('No active sessions.')).toBeInTheDocument();
+  });
 });
