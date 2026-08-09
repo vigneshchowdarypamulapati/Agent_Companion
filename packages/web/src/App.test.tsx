@@ -18,9 +18,9 @@ describe('App', () => {
     expect(screen.getByText('Pair this device')).toBeInTheDocument();
   });
 
-  it('shows Dashboard when credentials are already stored', async () => {
+  it('shows the session list when credentials are already stored', async () => {
     storeCredentials({ token: 'tok-1', deviceId: 'dev-1' });
-    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(undefined);
+    vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connected: true,
       sendCommand: vi.fn(),
@@ -28,12 +28,12 @@ describe('App', () => {
 
     render(<App />);
 
-    expect(await screen.findByText('No Active Sessions')).toBeInTheDocument();
+    expect(await screen.findByText('No active sessions.')).toBeInTheDocument();
   });
 
-  it('switches to Dashboard after pairing succeeds', async () => {
+  it('switches to the session list after pairing succeeds', async () => {
     vi.spyOn(pairingApi, 'redeemPairingCode').mockResolvedValue({ token: 'tok-1', deviceId: 'dev-1' });
-    vi.spyOn(sessionsApi, 'getActiveSession').mockResolvedValue(undefined);
+    vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connected: true,
       sendCommand: vi.fn(),
@@ -44,6 +44,6 @@ describe('App', () => {
     await userEvent.type(screen.getByLabelText(/enter pairing code/i), '123456');
     await userEvent.click(screen.getByRole('button', { name: /^pair$/i }));
 
-    expect(await screen.findByText('No Active Sessions')).toBeInTheDocument();
+    expect(await screen.findByText('No active sessions.')).toBeInTheDocument();
   });
 });

@@ -22,6 +22,24 @@ state where an HTTPS page is left pointing at a `ws://localhost` socket the
 browser blocks as mixed content. Set `VITE_RELAY_WS_URL` explicitly only if
 the WebSocket lives at a different host than the REST API.
 
+## Views
+
+Two client-side routes (`react-router`), both behind the pairing gate in
+`App.tsx`:
+
+- `/` — `SessionList`: every one of the user's active sessions (including
+  stopped-but-not-yet-dismissed ones), sorted with anything waiting on a
+  permission decision first, then by most recent activity.
+- `/sessions/:id` — `SessionDetail`: the full live view of one session
+  (activity feed, modified files, permission prompt, controls) — this is
+  what `Dashboard` used to be before multi-session support.
+
+Both share a single WebSocket connection, owned by `SessionsProvider`
+(`src/SessionsProvider.tsx` + `src/use-sessions-store.ts`) above the router:
+the relay broadcasts every event for every one of a user's sessions to every
+one of their browser connections unscoped, so `SessionList` and
+`SessionDetail` both read off the same stream rather than opening their own.
+
 ## Follow-up (not in this plan)
 
 - Real PWA icon set (`vite.config.ts`'s `manifest.icons` is currently empty).

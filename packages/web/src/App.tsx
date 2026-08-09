@@ -1,6 +1,9 @@
 import { useState } from 'react';
+import { BrowserRouter, Routes, Route } from 'react-router';
 import PairingScreen from './PairingScreen';
-import Dashboard from './Dashboard';
+import SessionList from './SessionList';
+import SessionDetail from './SessionDetail';
+import { SessionsProvider } from './SessionsProvider';
 import { clearStoredCredentials, getStoredCredentials } from './storage';
 
 export default function App() {
@@ -10,13 +13,22 @@ export default function App() {
     return <PairingScreen onPaired={() => setCredentials(getStoredCredentials())} />;
   }
 
+  const handleUnauthorized = () => {
+    clearStoredCredentials();
+    setCredentials(undefined);
+  };
+
   return (
-    <Dashboard
-      token={credentials.token}
-      onUnauthorized={() => {
-        clearStoredCredentials();
-        setCredentials(undefined);
-      }}
-    />
+    <SessionsProvider token={credentials.token} onUnauthorized={handleUnauthorized}>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<SessionList />} />
+          <Route
+            path="/sessions/:id"
+            element={<SessionDetail token={credentials.token} onUnauthorized={handleUnauthorized} />}
+          />
+        </Routes>
+      </BrowserRouter>
+    </SessionsProvider>
   );
 }

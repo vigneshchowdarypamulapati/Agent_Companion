@@ -17,6 +17,12 @@ export default defineConfig({
         background_color: '#0f172a',
         theme_color: '#0f172a',
       },
+      workbox: {
+        // The app now has real client-side routes (/sessions/:id); without
+        // this, a direct or offline-cached navigation to one falls through
+        // to a 404 instead of the SPA shell that client-side routing needs.
+        navigateFallback: '/index.html',
+      },
     }),
   ],
 });
