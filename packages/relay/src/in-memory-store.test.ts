@@ -80,6 +80,8 @@ describe('InMemoryStore', () => {
       projectPath: '/tmp/project',
       status: 'running',
       startedAt: 1,
+      lastEventAt: 1,
+      dismissed: false,
     });
     await store.updateSessionStatus('sess-1', 'paused');
 
@@ -87,7 +89,7 @@ describe('InMemoryStore', () => {
     expect(session?.status).toBe('paused');
   });
 
-  it('getActiveSessionForUser returns the session that is not stopped', async () => {
+  it("appendSessionEvent bumps the owning session's lastEventAt", async () => {
     const store = new InMemoryStore();
     await store.upsertSession({
       id: 'sess-1',
@@ -96,85 +98,130 @@ describe('InMemoryStore', () => {
       projectPath: '/tmp/project',
       status: 'running',
       startedAt: 1,
+      lastEventAt: 1,
+      dismissed: false,
     });
 
-    const active = await store.getActiveSessionForUser('user-1');
-    expect(active?.id).toBe('sess-1');
+    await store.appendSessionEvent('sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 42 });
+
+    expect((await store.getSession('sess-1'))?.lastEventAt).toBe(42);
   });
 
-  it('getActiveSessionForUser returns undefined once the session is stopped', async () => {
+  it('getActiveSessionsForUser returns every non-dismissed session for that user', async () => {
     const store = new InMemoryStore();
     await store.upsertSession({
       id: 'sess-1',
       userId: 'user-1',
       daemonDeviceId: 'device-1',
-      projectPath: '/tmp/project',
+      projectPath: '/tmp/project-a',
       status: 'running',
       startedAt: 1,
-    });
-    await store.updateSessionStatus('sess-1', 'stopped');
-
-    expect(await store.getActiveSessionForUser('user-1')).toBeUndefined();
-  });
-
-  it('getActiveSessionForUser only returns sessions belonging to that user', async () => {
-    const store = new InMemoryStore();
-    await store.upsertSession({
-      id: 'sess-1',
-      userId: 'user-1',
-      daemonDeviceId: 'device-1',
-      projectPath: '/tmp/project',
-      status: 'running',
-      startedAt: 1,
-    });
-
-    expect(await store.getActiveSessionForUser('user-2')).toBeUndefined();
-  });
-
-  it('getActiveSessionForUser returns the most recently started non-stopped session', async () => {
-    const store = new InMemoryStore();
-    // Inserted first, started later: a stale non-stopped session (e.g. a
-    // daemon that died without emitting `stopped`) must not win on insertion
-    // order alone.
-    await store.upsertSession({
-      id: 'sess-old',
-      userId: 'user-1',
-      daemonDeviceId: 'device-1',
-      projectPath: '/tmp/old',
-      status: 'running',
-      startedAt: 100,
+      lastEventAt: 1,
+      dismissed: false,
     });
     await store.upsertSession({
-      id: 'sess-new',
+      id: 'sess-2',
       userId: 'user-1',
       daemonDeviceId: 'device-2',
-      projectPath: '/tmp/new',
-      status: 'running',
-      startedAt: 200,
+      projectPath: '/tmp/project-b',
+      status: 'waiting_permission',
+      startedAt: 2,
+      lastEventAt: 2,
+      dismissed: false,
     });
 
-    expect((await store.getActiveSessionForUser('user-1'))?.id).toBe('sess-new');
+    const active = await store.getActiveSessionsForUser('user-1');
+    expect(active.map((s) => s.id).sort()).toEqual(['sess-1', 'sess-2']);
   });
 
-  it('getActiveSessionForUser prefers the greater startedAt even when it was created first', async () => {
+  it('getActiveSessionsForUser includes a stopped session until it is dismissed', async () => {
     const store = new InMemoryStore();
     await store.upsertSession({
-      id: 'sess-new',
-      userId: 'user-1',
-      daemonDeviceId: 'device-2',
-      projectPath: '/tmp/new',
-      status: 'running',
-      startedAt: 200,
-    });
-    await store.upsertSession({
-      id: 'sess-old',
+      id: 'sess-1',
       userId: 'user-1',
       daemonDeviceId: 'device-1',
-      projectPath: '/tmp/old',
-      status: 'running',
-      startedAt: 100,
+      projectPath: '/tmp/project',
+      status: 'stopped',
+      startedAt: 1,
+      lastEventAt: 1,
+      dismissed: false,
     });
 
-    expect((await store.getActiveSessionForUser('user-1'))?.id).toBe('sess-new');
+    expect((await store.getActiveSessionsForUser('user-1')).map((s) => s.id)).toEqual(['sess-1']);
+
+    await store.dismissSession('sess-1', 'user-1');
+
+    expect(await store.getActiveSessionsForUser('user-1')).toEqual([]);
+  });
+
+  it('getActiveSessionsForUser only returns sessions belonging to that user', async () => {
+    const store = new InMemoryStore();
+    await store.upsertSession({
+      id: 'sess-1',
+      userId: 'user-1',
+      daemonDeviceId: 'device-1',
+      projectPath: '/tmp/project',
+      status: 'running',
+      startedAt: 1,
+      lastEventAt: 1,
+      dismissed: false,
+    });
+
+    expect(await store.getActiveSessionsForUser('user-2')).toEqual([]);
+  });
+
+  it('dismissSession returns not_found for an unknown session', async () => {
+    const store = new InMemoryStore();
+    expect(await store.dismissSession('does-not-exist', 'user-1')).toBe('not_found');
+  });
+
+  it('dismissSession returns forbidden for a session owned by another user', async () => {
+    const store = new InMemoryStore();
+    await store.upsertSession({
+      id: 'sess-1',
+      userId: 'user-1',
+      daemonDeviceId: 'device-1',
+      projectPath: '/tmp/project',
+      status: 'stopped',
+      startedAt: 1,
+      lastEventAt: 1,
+      dismissed: false,
+    });
+
+    expect(await store.dismissSession('sess-1', 'user-2')).toBe('forbidden');
+  });
+
+  it('dismissSession returns not_stopped for a session that is still running', async () => {
+    const store = new InMemoryStore();
+    await store.upsertSession({
+      id: 'sess-1',
+      userId: 'user-1',
+      daemonDeviceId: 'device-1',
+      projectPath: '/tmp/project',
+      status: 'running',
+      startedAt: 1,
+      lastEventAt: 1,
+      dismissed: false,
+    });
+
+    expect(await store.dismissSession('sess-1', 'user-1')).toBe('not_stopped');
+    expect((await store.getSession('sess-1'))?.dismissed).toBe(false);
+  });
+
+  it('dismissSession marks a stopped session dismissed and returns ok', async () => {
+    const store = new InMemoryStore();
+    await store.upsertSession({
+      id: 'sess-1',
+      userId: 'user-1',
+      daemonDeviceId: 'device-1',
+      projectPath: '/tmp/project',
+      status: 'stopped',
+      startedAt: 1,
+      lastEventAt: 1,
+      dismissed: false,
+    });
+
+    expect(await store.dismissSession('sess-1', 'user-1')).toBe('ok');
+    expect((await store.getSession('sess-1'))?.dismissed).toBe(true);
   });
 });

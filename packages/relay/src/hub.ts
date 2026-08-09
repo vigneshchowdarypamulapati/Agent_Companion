@@ -84,6 +84,8 @@ export class ConnectionHub {
         projectPath: event.projectPath,
         status: 'running',
         startedAt: event.at,
+        lastEventAt: event.at,
+        dismissed: false,
       });
     } else {
       // Verify ownership for non-session_started events

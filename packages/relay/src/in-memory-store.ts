@@ -2,6 +2,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import type { SessionEvent, SessionStatus } from '@companion/protocol';
 import type {
   Device,
+  DismissSessionResult,
   PairingCode,
   SessionRecord,
   Store,
@@ -87,21 +88,26 @@ export class InMemoryStore implements Store {
   }
 
   /**
-   * The most recently started non-stopped session for the user. Recency, not
-   * Map insertion order, is what decides: a daemon that dies without emitting
-   * a `stopped` event leaves its session non-stopped forever, and returning
-   * that corpse ahead of a genuinely live session would point the browser at
-   * the wrong one. (Reaping such sessions is a separate concern.)
+   * Every session the user hasn't dismissed: anything not yet stopped, plus
+   * anything stopped but not yet dismissed. dismissSession only ever sets
+   * `dismissed` on a stopped session, so this single check covers both.
    */
-  async getActiveSessionForUser(userId: string): Promise<SessionRecord | undefined> {
-    let latest: SessionRecord | undefined;
+  async getActiveSessionsForUser(userId: string): Promise<SessionRecord[]> {
+    const result: SessionRecord[] = [];
     for (const session of this.sessions.values()) {
-      if (session.userId !== userId || session.status === 'stopped') continue;
-      if (!latest || session.startedAt > latest.startedAt) {
-        latest = session;
-      }
+      if (session.userId !== userId || session.dismissed) continue;
+      result.push(session);
     }
-    return latest;
+    return result;
+  }
+
+  async dismissSession(sessionId: string, userId: string): Promise<DismissSessionResult> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return 'not_found';
+    if (session.userId !== userId) return 'forbidden';
+    if (session.status !== 'stopped') return 'not_stopped';
+    session.dismissed = true;
+    return 'ok';
   }
 
   async appendSessionEvent(sessionId: string, event: SessionEvent): Promise<StoredSessionEvent> {
@@ -114,6 +120,12 @@ export class InMemoryStore implements Store {
     const list = this.events.get(sessionId) ?? [];
     list.push(stored);
     this.events.set(sessionId, list);
+    // Keeps the session's "most recently active" marker in sync with the
+    // event stream, so list-view sorting never needs to fetch that stream.
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.lastEventAt = event.at;
+    }
     return stored;
   }
 

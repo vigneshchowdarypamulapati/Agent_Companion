@@ -29,6 +29,8 @@ export interface SessionRecord {
   projectPath: string;
   status: SessionStatus;
   startedAt: number;
+  lastEventAt: number;
+  dismissed: boolean;
 }
 
 export interface StoredSessionEvent {
@@ -37,6 +39,8 @@ export interface StoredSessionEvent {
   event: SessionEvent;
   createdAt: number;
 }
+
+export type DismissSessionResult = 'ok' | 'not_found' | 'forbidden' | 'not_stopped';
 
 export interface Store {
   getOrCreateDefaultUser(): Promise<User>;
@@ -52,7 +56,8 @@ export interface Store {
   upsertSession(session: SessionRecord): Promise<void>;
   updateSessionStatus(sessionId: string, status: SessionStatus): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;
-  getActiveSessionForUser(userId: string): Promise<SessionRecord | undefined>;
+  getActiveSessionsForUser(userId: string): Promise<SessionRecord[]>;
+  dismissSession(sessionId: string, userId: string): Promise<DismissSessionResult>;
   appendSessionEvent(sessionId: string, event: SessionEvent): Promise<StoredSessionEvent>;
   getSessionEvents(sessionId: string, sinceSeq?: number): Promise<StoredSessionEvent[]>;
 }
