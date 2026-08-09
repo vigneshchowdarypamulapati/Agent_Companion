@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ConnectionHub, type Connection, type RelayHubMessage } from './hub.js';
 import { InMemoryStore } from './in-memory-store.js';
 import { InMemoryPubSub } from './in-memory-pubsub.js';
@@ -405,5 +405,135 @@ describe('ConnectionHub', () => {
     });
 
     expect(browser.sent).toHaveLength(0);
+  });
+
+  // --- daemon-disconnect grace period ---
+
+  it("marks a daemon's sessions stopped after the grace period once all its connections close", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new InMemoryStore();
+      const pubsub = new InMemoryPubSub();
+      const hub = new ConnectionHub(store, pubsub, 1000);
+      await hub.start();
+      const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+      const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+      hub.register(daemon);
+      hub.register(browser);
+
+      await hub.routeFromDaemon(daemon, 'sess-1', {
+        type: 'session_started',
+        sessionId: 'sess-1',
+        projectPath: '/tmp/project',
+        at: 1,
+      });
+
+      hub.unregister(daemon);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const session = await store.getSession('sess-1');
+      expect(session?.status).toBe('stopped');
+
+      const stoppedEvents = browser.sent.filter(
+        (m) => m.kind === 'event' && m.event.type === 'stopped' && m.sessionId === 'sess-1'
+      );
+      expect(stoppedEvents).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not stop sessions if the daemon reconnects within the grace period', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new InMemoryStore();
+      const pubsub = new InMemoryPubSub();
+      const hub = new ConnectionHub(store, pubsub, 1000);
+      await hub.start();
+      const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+      hub.register(daemon);
+
+      await hub.routeFromDaemon(daemon, 'sess-1', {
+        type: 'session_started',
+        sessionId: 'sess-1',
+        projectPath: '/tmp/project',
+        at: 1,
+      });
+
+      hub.unregister(daemon);
+      await vi.advanceTimersByTimeAsync(500);
+
+      const reconnected = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+      hub.register(reconnected);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const session = await store.getSession('sess-1');
+      expect(session?.status).toBe('running');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('only stops sessions owned by the disconnected daemon, not other daemons for the same user', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new InMemoryStore();
+      const pubsub = new InMemoryPubSub();
+      const hub = new ConnectionHub(store, pubsub, 1000);
+      await hub.start();
+      const daemonA = fakeConnection({ deviceId: 'daemon-a', deviceType: 'daemon', userId: 'user-1' });
+      const daemonB = fakeConnection({ deviceId: 'daemon-b', deviceType: 'daemon', userId: 'user-1' });
+      hub.register(daemonA);
+      hub.register(daemonB);
+
+      await hub.routeFromDaemon(daemonA, 'sess-a', {
+        type: 'session_started',
+        sessionId: 'sess-a',
+        projectPath: '/tmp/a',
+        at: 1,
+      });
+      await hub.routeFromDaemon(daemonB, 'sess-b', {
+        type: 'session_started',
+        sessionId: 'sess-b',
+        projectPath: '/tmp/b',
+        at: 1,
+      });
+
+      hub.unregister(daemonA);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect((await store.getSession('sess-a'))?.status).toBe('stopped');
+      expect((await store.getSession('sess-b'))?.status).toBe('running');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not append a duplicate stopped event for a session that is already stopped', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new InMemoryStore();
+      const pubsub = new InMemoryPubSub();
+      const hub = new ConnectionHub(store, pubsub, 1000);
+      await hub.start();
+      const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+      hub.register(daemon);
+
+      await hub.routeFromDaemon(daemon, 'sess-1', {
+        type: 'session_started',
+        sessionId: 'sess-1',
+        projectPath: '/tmp/project',
+        at: 1,
+      });
+      await hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 2 });
+
+      hub.unregister(daemon);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const events = await store.getSessionEvents('sess-1');
+      expect(events.filter((e) => e.event.type === 'stopped')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

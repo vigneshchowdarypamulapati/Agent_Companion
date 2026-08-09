@@ -29,6 +29,12 @@ const STATUS_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], SessionStatus>>
 
 const CHANNEL = 'relay:message';
 
+/** How long a daemon's sessions stay non-stopped after its last connection drops, before being
+ * treated as orphaned. Long enough that a brief network blip or process restart doesn't falsely
+ * kill an in-progress session; short enough that a genuinely dead daemon's sessions become
+ * dismissable in a reasonable time. */
+const DEFAULT_DAEMON_DISCONNECT_GRACE_MS = 30_000;
+
 export class ConnectionHub {
   /**
    * Connections are keyed by deviceId but stored as a Set, because the same device may hold
@@ -38,9 +44,15 @@ export class ConnectionHub {
    */
   private connections = new Map<string, Set<Connection>>();
 
+  /** Pending grace-period timers, keyed by daemon deviceId. Cancelled by a reconnect (see
+   * `register`) before they fire; fires in `stopDaemonSessions` otherwise. */
+  private pendingDaemonStops = new Map<string, ReturnType<typeof setTimeout>>();
+
   constructor(
     private store: Store,
-    private pubsub: PubSub
+    private pubsub: PubSub,
+    private graceMs: number = DEFAULT_DAEMON_DISCONNECT_GRACE_MS,
+    private now: () => number = Date.now
   ) {}
 
   /** Must be awaited before the hub will receive any routed messages. */
@@ -52,6 +64,14 @@ export class ConnectionHub {
     const set = this.connections.get(connection.deviceId) ?? new Set<Connection>();
     set.add(connection);
     this.connections.set(connection.deviceId, set);
+
+    if (connection.deviceType === 'daemon') {
+      const pending = this.pendingDaemonStops.get(connection.deviceId);
+      if (pending) {
+        clearTimeout(pending);
+        this.pendingDaemonStops.delete(connection.deviceId);
+      }
+    }
   }
 
   unregister(connection: Connection): void {
@@ -60,6 +80,43 @@ export class ConnectionHub {
     set.delete(connection);
     if (set.size === 0) {
       this.connections.delete(connection.deviceId);
+      if (connection.deviceType === 'daemon') {
+        this.scheduleDaemonStop(connection.deviceId, connection.userId);
+      }
+    }
+  }
+
+  private scheduleDaemonStop(deviceId: string, userId: string): void {
+    const timer = setTimeout(() => {
+      this.pendingDaemonStops.delete(deviceId);
+      void this.stopDaemonSessions(deviceId, userId);
+    }, this.graceMs);
+    this.pendingDaemonStops.set(deviceId, timer);
+  }
+
+  /**
+   * Marks every non-stopped session owned by a now-fully-disconnected daemon as stopped, the same
+   * way a genuine `stopped` event from that daemon would be handled: store status updated, event
+   * appended to the session's log, broadcast live to the user's browsers with a store-assigned
+   * seq. Runs `graceMs` after the daemon's last connection closes; cancelled by a reconnect within
+   * that window (see `register`).
+   */
+  private async stopDaemonSessions(deviceId: string, userId: string): Promise<void> {
+    try {
+      const sessions = await this.store.getActiveSessionsForUser(userId);
+      const orphaned = sessions.filter((s) => s.daemonDeviceId === deviceId && s.status !== 'stopped');
+      for (const session of orphaned) {
+        const event: SessionEvent = { type: 'stopped', sessionId: session.id, at: this.now() };
+        await this.store.updateSessionStatus(session.id, 'stopped');
+        const stored = await this.store.appendSessionEvent(session.id, event);
+        await this.pubsub.publish(CHANNEL, {
+          userId,
+          message: { kind: 'event', sessionId: session.id, seq: stored.seq, event },
+        } satisfies PubSubEnvelope);
+      }
+    } catch {
+      // Best-effort cleanup running detached from any request/connection — a store or pubsub
+      // failure here must not crash the relay process.
     }
   }
 
