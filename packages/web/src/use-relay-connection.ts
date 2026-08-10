@@ -21,6 +21,11 @@ export interface UseRelayConnectionOptions {
    */
   onLog?: (message: string) => void;
   /**
+   * Fired when the underlying connection reports its token was rejected (relay close code
+   * 4401/4403). Read via a ref, like onEvent/onLog, for the same reason.
+   */
+  onUnauthorized?: () => void;
+  /**
    * Overridable purely for testing — production code never passes this and
    * always gets a real RelayConnection. Intentionally excluded from the
    * mount effect's dependency array below: it's a fixed injection seam, not
@@ -35,13 +40,22 @@ export interface UseRelayConnectionResult {
 }
 
 export function useRelayConnection(options: UseRelayConnectionOptions): UseRelayConnectionResult {
-  const { url, token, onEvent, onLog, createConnection = (opts) => new RelayConnection(opts) } = options;
+  const {
+    url,
+    token,
+    onEvent,
+    onLog,
+    onUnauthorized,
+    createConnection = (opts) => new RelayConnection(opts),
+  } = options;
   const [connected, setConnected] = useState(false);
   const connectionRef = useRef<Pick<RelayConnection, 'connect' | 'close' | 'sendCommand'> | undefined>(undefined);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
   const onLogRef = useRef(onLog);
   onLogRef.current = onLog;
+  const onUnauthorizedRef = useRef(onUnauthorized);
+  onUnauthorizedRef.current = onUnauthorized;
 
   useEffect(() => {
     const connection = createConnection({
@@ -51,6 +65,7 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
       onOpen: () => setConnected(true),
       onClose: () => setConnected(false),
       onLog: (message) => onLogRef.current?.(message),
+      onUnauthorized: () => onUnauthorizedRef.current?.(),
     });
     connectionRef.current = connection;
     connection.connect();

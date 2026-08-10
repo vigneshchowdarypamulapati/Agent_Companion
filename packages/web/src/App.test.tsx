@@ -12,6 +12,7 @@ describe('App', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     clearStoredCredentials();
+    window.history.pushState({}, '', '/');
   });
 
   it('shows PairingScreen when there are no stored credentials', () => {

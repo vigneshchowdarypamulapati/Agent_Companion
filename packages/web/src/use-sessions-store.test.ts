@@ -8,14 +8,17 @@ import type { LiveEvent } from './use-relay-connection';
 
 function mockUseRelayConnection() {
   let capturedOnEvent: ((message: LiveEvent) => void) | undefined;
+  let capturedOnUnauthorized: (() => void) | undefined;
   let connectedValue = true;
   const sendCommand = vi.fn();
   vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockImplementation((options) => {
     capturedOnEvent = options.onEvent;
+    capturedOnUnauthorized = options.onUnauthorized;
     return { connected: connectedValue, sendCommand };
   });
   return {
     emit: (message: LiveEvent) => capturedOnEvent?.(message),
+    emitUnauthorized: () => capturedOnUnauthorized?.(),
     sendCommand,
     setConnected: (value: boolean) => {
       connectedValue = value;
@@ -194,6 +197,20 @@ describe('useSessionsStore', () => {
     renderHook(() => useSessionsStore('bad-token', onUnauthorized));
 
     await waitFor(() => expect(onUnauthorized).toHaveBeenCalledOnce());
+  });
+
+  it('calls onUnauthorized when the relay connection reports the token was rejected', () => {
+    vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
+    const relay = mockUseRelayConnection();
+    const onUnauthorized = vi.fn();
+
+    renderHook(() => useSessionsStore('tok-1', onUnauthorized));
+
+    act(() => {
+      relay.emitUnauthorized();
+    });
+
+    expect(onUnauthorized).toHaveBeenCalledOnce();
   });
 
   it('dismissSession removes the session from state on success', async () => {

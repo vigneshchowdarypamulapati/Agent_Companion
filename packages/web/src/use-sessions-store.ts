@@ -157,6 +157,7 @@ export function useSessionsStore(token: string, onUnauthorized: () => void): Use
     token,
     onEvent: handleLiveEvent,
     onLog: (message) => console.log('[relay]', message),
+    onUnauthorized: () => onUnauthorizedRef.current(),
   });
 
   const isFirstConnect = useRef(true);

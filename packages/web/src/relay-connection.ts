@@ -6,6 +6,12 @@ export interface RelayConnectionOptions {
   onEvent: (message: { sessionId: string; seq: number; event: SessionEvent }) => void;
   onOpen?: () => void;
   onClose?: () => void;
+  /**
+   * Fired when the relay closes the connection with code 4401 (invalid/missing token) or
+   * 4403 (this device was unpaired) — signals that reconnecting with the same token would
+   * just repeat the rejection. When this fires, the connection stops retrying.
+   */
+  onUnauthorized?: () => void;
   onLog?: (message: string) => void;
   initialBackoffMs?: number;
   maxBackoffMs?: number;
@@ -29,6 +35,7 @@ export class RelayConnection {
   private readonly onEvent: (message: { sessionId: string; seq: number; event: SessionEvent }) => void;
   private readonly onOpenCallback: () => void;
   private readonly onCloseCallback: () => void;
+  private readonly onUnauthorizedCallback: () => void;
   private readonly onLog: (message: string) => void;
   private readonly initialBackoffMs: number;
   private readonly maxBackoffMs: number;
@@ -45,6 +52,7 @@ export class RelayConnection {
     this.onEvent = options.onEvent;
     this.onOpenCallback = options.onOpen ?? (() => {});
     this.onCloseCallback = options.onClose ?? (() => {});
+    this.onUnauthorizedCallback = options.onUnauthorized ?? (() => {});
     this.onLog = options.onLog ?? (() => {});
     this.initialBackoffMs = options.initialBackoffMs ?? 500;
     this.maxBackoffMs = options.maxBackoffMs ?? 10_000;
@@ -120,13 +128,21 @@ export class RelayConnection {
       }
     });
 
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (closeEvent) => {
       if (this.openConfirmTimer) {
         clearTimeout(this.openConfirmTimer);
         this.openConfirmTimer = undefined;
       }
       this.onCloseCallback();
       if (this.closed) return;
+      // 4401 (invalid/missing token) and 4403 (device unpaired) mean the token itself is no
+      // longer valid — reconnecting with the same token would just repeat the rejection
+      // forever. Treat these as terminal instead of retrying.
+      if (closeEvent.code === 4401 || closeEvent.code === 4403) {
+        this.closed = true;
+        this.onUnauthorizedCallback();
+        return;
+      }
       this.scheduleReconnect();
     });
   }

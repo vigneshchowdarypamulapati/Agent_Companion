@@ -94,4 +94,24 @@ describe('useRelayConnection', () => {
     unmount();
     expect(fake.close).toHaveBeenCalledOnce();
   });
+
+  it('passes onUnauthorized through to the connection options', () => {
+    const fake = createFakeConnection();
+    const calls: number[] = [];
+    renderHook(() =>
+      useRelayConnection({
+        url: 'ws://x',
+        token: 't',
+        onEvent: () => {},
+        onUnauthorized: () => calls.push(1),
+        createConnection: fake.factory,
+      })
+    );
+
+    act(() => {
+      fake.getOptions().onUnauthorized?.();
+    });
+
+    expect(calls).toEqual([1]);
+  });
 });

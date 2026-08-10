@@ -22,11 +22,11 @@ publicly reachable) to configure the listener.
 - `GET /devices/me` — the calling device's own `{ id, type, name, createdAt }`
   (never includes `tokenHash` or `userId`).
 - `POST /devices/unpair` — revokes the calling device's token so it can
-  never authenticate again, and force-closes any other live WebSocket
-  connections currently authenticated as that device. `200 { ok: true }`
-  on success. There is no way to unpair a device other than the one making
-  the request — the target is always the caller, identified by its own
-  bearer token.
+  never authenticate again, and force-closes every live WebSocket
+  connection currently authenticated as that device (including the one
+  that made this request, if any). `200 { ok: true }` on success. There is
+  no way to unpair a device other than the one making the request — the
+  target is always the caller, identified by its own bearer token.
 - `GET /sessions/active` — every one of the caller's sessions that isn't
   dismissed: anything not yet stopped, plus anything stopped but not yet
   dismissed. `200` with a (possibly empty) JSON array.

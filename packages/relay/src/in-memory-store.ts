@@ -51,6 +51,11 @@ export class InMemoryStore implements Store {
     return id ? this.devices.get(id) : undefined;
   }
 
+  /**
+   * Removes only the device and its token index. Sessions referencing this device's id as
+   * daemonDeviceId are left as-is on purpose — if it was a daemon, ConnectionHub's
+   * disconnect-grace path is what marks its sessions stopped, not this method.
+   */
   async deleteDevice(deviceId: string): Promise<void> {
     const device = this.devices.get(deviceId);
     if (!device) return;

@@ -64,7 +64,7 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
 
       {loadError && (
         <p role="alert" className="bg-red-900 text-red-100 rounded-md px-4 py-3">
-          Couldn't load device info: {loadError}
+          {loadError}
         </p>
       )}
 

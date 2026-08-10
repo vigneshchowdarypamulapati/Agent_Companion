@@ -88,16 +88,24 @@ export class ConnectionHub {
   }
 
   /**
-   * Force-closes every live connection currently authenticated as `deviceId`. Used when a
-   * device is unpaired: closing triggers the transport's own close handling (e.g. the
-   * WebSocket 'close' event in server.ts), which calls `unregister()` for normal cleanup —
-   * this method does not call `unregister()` itself, to avoid racing that natural teardown.
+   * Force-closes every live connection currently authenticated as `deviceId`, and removes
+   * them from the hub immediately rather than waiting for the transport's own close handling
+   * to get around to it. `ws.close()` performs a graceful close handshake with up to a 30s
+   * timeout before the socket is actually destroyed — without an immediate `unregister()`
+   * here, a revoked device could keep receiving live session events for up to 30s after
+   * "revocation." Calling `unregister()` here is safe even though the WebSocket 'close'
+   * handler in server.ts also calls it once the socket actually closes: `unregister()`
+   * no-ops if the connection is already gone from its deviceId's set, so that later call is
+   * a harmless no-op. (Mutating the Set via `unregister` while iterating it here is also
+   * safe — deleting the current element during a for-of over a Set does not skip or revisit
+   * any other element.)
    */
   disconnectDevice(deviceId: string): void {
     const set = this.connections.get(deviceId);
     if (!set) return;
     for (const connection of set) {
       connection.close();
+      this.unregister(connection);
     }
   }
 

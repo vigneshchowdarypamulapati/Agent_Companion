@@ -158,8 +158,8 @@ export async function createRelayServer({ store, pubsub }: RelayServerOptions): 
         res.status(401).json({ error: 'Unauthorized' });
         return;
       }
-      hub.disconnectDevice(device.id);
       await store.deleteDevice(device.id);
+      hub.disconnectDevice(device.id);
       res.status(200).json({ ok: true });
     })
   );

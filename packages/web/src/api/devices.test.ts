@@ -30,6 +30,15 @@ describe('devices API', () => {
     await expect(getDevice('tok-1')).rejects.toThrow('HTTP 500');
   });
 
+  it('getDevice sends a Bearer authorization header', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect((init?.headers as Record<string, string>).authorization).toBe('Bearer tok-1');
+      return { ok: true, status: 200, json: async () => ({ id: 'dev-1', type: 'browser', name: 'phone', createdAt: 1 }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await getDevice('tok-1');
+  });
+
   it('unpairDevice resolves on 200', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })));
     await expect(unpairDevice('tok-1')).resolves.toBeUndefined();

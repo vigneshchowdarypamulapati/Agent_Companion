@@ -578,4 +578,33 @@ describe('ConnectionHub', () => {
 
     expect(() => hub.disconnectDevice('does-not-exist')).not.toThrow();
   });
+
+  it("force-closing a daemon's connection via disconnectDevice still triggers the grace-period stop", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new InMemoryStore();
+      const pubsub = new InMemoryPubSub();
+      const hub = new ConnectionHub(store, pubsub, 1000);
+      await hub.start();
+      const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+      hub.register(daemon);
+
+      await hub.routeFromDaemon(daemon, 'sess-1', {
+        type: 'session_started',
+        sessionId: 'sess-1',
+        projectPath: '/tmp/project',
+        at: 1,
+      });
+
+      hub.disconnectDevice('daemon-1');
+      expect(daemon.closed.value).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const session = await store.getSession('sess-1');
+      expect(session?.status).toBe('stopped');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

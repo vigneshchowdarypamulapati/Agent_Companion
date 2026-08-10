@@ -144,4 +144,65 @@ describe('RelayConnection', () => {
     await secondConnection;
     expect(connectionCount).toBe(2);
   });
+
+  it('does not reconnect and calls onUnauthorized when the server closes with code 4401', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const serverConnected = waitForConnection(wss);
+
+    let connectionCount = 0;
+    wss.on('connection', () => {
+      connectionCount += 1;
+    });
+
+    const unauthorized = new Promise<void>((resolve) => {
+      connection = new RelayConnection({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 'test-token',
+        onEvent: () => {},
+        onUnauthorized: () => resolve(),
+        initialBackoffMs: 10,
+        maxBackoffMs: 50,
+      });
+    });
+    connection!.connect();
+
+    const serverSocket = await serverConnected;
+    serverSocket.close(4401);
+
+    await unauthorized;
+    // Give any (incorrect) reconnect attempt time to happen before asserting it didn't.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(connectionCount).toBe(1);
+  });
+
+  it('does not reconnect and calls onUnauthorized when the server closes with code 4403', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const serverConnected = waitForConnection(wss);
+
+    let connectionCount = 0;
+    wss.on('connection', () => {
+      connectionCount += 1;
+    });
+
+    const unauthorized = new Promise<void>((resolve) => {
+      connection = new RelayConnection({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 'test-token',
+        onEvent: () => {},
+        onUnauthorized: () => resolve(),
+        initialBackoffMs: 10,
+        maxBackoffMs: 50,
+      });
+    });
+    connection!.connect();
+
+    const serverSocket = await serverConnected;
+    serverSocket.close(4403);
+
+    await unauthorized;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(connectionCount).toBe(1);
+  });
 });
