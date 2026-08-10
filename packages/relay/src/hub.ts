@@ -7,6 +7,7 @@ export interface Connection {
   readonly userId: string;
   readonly deviceType: 'daemon' | 'browser';
   send(message: RelayHubMessage): void;
+  close(): void;
 }
 
 export type RelayHubMessage =
@@ -83,6 +84,20 @@ export class ConnectionHub {
       if (connection.deviceType === 'daemon') {
         this.scheduleDaemonStop(connection.deviceId, connection.userId);
       }
+    }
+  }
+
+  /**
+   * Force-closes every live connection currently authenticated as `deviceId`. Used when a
+   * device is unpaired: closing triggers the transport's own close handling (e.g. the
+   * WebSocket 'close' event in server.ts), which calls `unregister()` for normal cleanup —
+   * this method does not call `unregister()` itself, to avoid racing that natural teardown.
+   */
+  disconnectDevice(deviceId: string): void {
+    const set = this.connections.get(deviceId);
+    if (!set) return;
+    for (const connection of set) {
+      connection.close();
     }
   }
 

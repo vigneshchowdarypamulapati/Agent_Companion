@@ -3,14 +3,19 @@ import { ConnectionHub, type Connection, type RelayHubMessage } from './hub.js';
 import { InMemoryStore } from './in-memory-store.js';
 import { InMemoryPubSub } from './in-memory-pubsub.js';
 
-function fakeConnection(overrides: Partial<Connection> = {}): Connection & { sent: RelayHubMessage[] } {
+function fakeConnection(overrides: Partial<Connection> = {}): Connection & { sent: RelayHubMessage[]; closed: { value: boolean } } {
   const sent: RelayHubMessage[] = [];
+  const closed = { value: false };
   return {
     deviceId: 'device-1',
     userId: 'user-1',
     deviceType: 'browser',
     send: (message) => sent.push(message),
+    close: () => {
+      closed.value = true;
+    },
     sent,
+    closed,
     ...overrides,
   };
 }
@@ -535,5 +540,42 @@ describe('ConnectionHub', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // --- disconnectDevice (used when a device is unpaired) ---
+
+  it('disconnectDevice closes every live connection for that device', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const tabA = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser' });
+    const tabB = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser' });
+    hub.register(tabA);
+    hub.register(tabB);
+
+    hub.disconnectDevice('browser-1');
+
+    expect(tabA.closed.value).toBe(true);
+    expect(tabB.closed.value).toBe(true);
+  });
+
+  it('disconnectDevice does not close connections belonging to a different device', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const target = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser' });
+    const other = fakeConnection({ deviceId: 'browser-2', deviceType: 'browser' });
+    hub.register(target);
+    hub.register(other);
+
+    hub.disconnectDevice('browser-1');
+
+    expect(target.closed.value).toBe(true);
+    expect(other.closed.value).toBe(false);
+  });
+
+  it('disconnectDevice is a no-op for a device with no live connections', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+
+    expect(() => hub.disconnectDevice('does-not-exist')).not.toThrow();
   });
 });
