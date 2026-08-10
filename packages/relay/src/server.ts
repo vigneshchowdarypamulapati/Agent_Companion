@@ -1,11 +1,12 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer } from 'ws';
-import { RelayMessage, RedeemPairingRequest } from '@companion/protocol';
+import { RelayMessage, RedeemPairingRequest, PushSubscriptionPayload } from '@companion/protocol';
 import type { Device, Store } from './store.js';
 import type { PubSub } from './pubsub.js';
 import { PairingService } from './pairing.js';
 import { ConnectionHub, type Connection } from './hub.js';
+import type { PushSender } from './push-sender.js';
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void> | void) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -28,11 +29,13 @@ async function authenticate(req: Request, pairing: PairingService): Promise<Devi
 export interface RelayServerOptions {
   store: Store;
   pubsub: PubSub;
+  pushSender?: PushSender;
+  vapidPublicKey?: string;
 }
 
-export async function createRelayServer({ store, pubsub }: RelayServerOptions): Promise<Server> {
+export async function createRelayServer({ store, pubsub, pushSender, vapidPublicKey }: RelayServerOptions): Promise<Server> {
   const pairing = new PairingService(store);
-  const hub = new ConnectionHub(store, pubsub);
+  const hub = new ConnectionHub(store, pubsub, undefined, undefined, pushSender);
   await hub.start();
 
   const app = express();
@@ -160,6 +163,44 @@ export async function createRelayServer({ store, pubsub }: RelayServerOptions): 
       }
       await store.deleteDevice(device.id);
       hub.disconnectDevice(device.id);
+      res.status(200).json({ ok: true });
+    })
+  );
+
+  app.get(
+    '/push/vapid-public-key',
+    asyncHandler(async (_req, res) => {
+      if (!vapidPublicKey) {
+        res.status(404).json({ error: 'Push notifications are not configured on this relay' });
+        return;
+      }
+      res.status(200).json({ publicKey: vapidPublicKey });
+    })
+  );
+
+  app.post(
+    '/devices/push-subscription',
+    asyncHandler(async (req, res) => {
+      const device = await authenticate(req, pairing);
+      if (!device) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      const subscription = PushSubscriptionPayload.parse(req.body);
+      await store.setPushSubscription(device.id, subscription);
+      res.status(200).json({ ok: true });
+    })
+  );
+
+  app.delete(
+    '/devices/push-subscription',
+    asyncHandler(async (req, res) => {
+      const device = await authenticate(req, pairing);
+      if (!device) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      await store.setPushSubscription(device.id, undefined);
       res.status(200).json({ ok: true });
     })
   );

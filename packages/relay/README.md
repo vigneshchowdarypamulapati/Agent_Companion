@@ -13,6 +13,12 @@ Set `COMPANION_RELAY_PORT` (default `8787`) and `COMPANION_RELAY_HOST`
 (default `0.0.0.0` — unlike the daemon, this server is meant to be
 publicly reachable) to configure the listener.
 
+Set `COMPANION_RELAY_VAPID_PUBLIC_KEY`, `COMPANION_RELAY_VAPID_PRIVATE_KEY`,
+and `COMPANION_RELAY_VAPID_SUBJECT` (a `mailto:` URI, required by the Web
+Push protocol) to enable push notifications. All three must be set together
+or none take effect — with any missing, the relay runs exactly as it does
+today and `GET /push/vapid-public-key` returns `404`.
+
 ## REST endpoints
 
 - `POST /pairing/request-code` — issue a 6-digit, 5-minute, single-use
@@ -27,6 +33,15 @@ publicly reachable) to configure the listener.
   that made this request, if any). `200 { ok: true }` on success. There is
   no way to unpair a device other than the one making the request — the
   target is always the caller, identified by its own bearer token.
+- `GET /push/vapid-public-key` — the relay's public VAPID key, needed by a
+  browser to subscribe to push. Unauthenticated (the key isn't secret).
+  `404` if the relay has no VAPID keys configured.
+- `POST /devices/push-subscription` `{ endpoint, keys: { p256dh, auth } }`
+  — stores a Web Push subscription against the calling device.
+  `200 { ok: true }` on success, `400` on an invalid subscription body.
+- `DELETE /devices/push-subscription` — clears the calling device's
+  subscription. `200 { ok: true }` on success (idempotent — succeeds even
+  if there was no subscription to clear).
 - `GET /sessions/active` — every one of the caller's sessions that isn't
   dismissed: anything not yet stopped, plus anything stopped but not yet
   dismissed. `200` with a (possibly empty) JSON array.
@@ -36,9 +51,11 @@ publicly reachable) to configure the listener.
 - `GET /sessions/:id` — current session status (for reconnect/catch-up).
 - `GET /sessions/:id/events?since=<seq>` — session event history.
 
-`GET /devices/me`, `POST /devices/unpair`, and all four `/sessions*` routes
-require `Authorization: Bearer <device-token>`; unauthenticated requests get
-`401`. `GET /sessions/active` isn't scoped to a single session id, so it
+`GET /devices/me`, `POST /devices/unpair`, `POST`/`DELETE
+/devices/push-subscription`, and all four `/sessions*` routes require
+`Authorization: Bearer <device-token>`; unauthenticated requests get `401`.
+`GET /push/vapid-public-key` is the one exception — it's intentionally
+public. `GET /sessions/active` isn't scoped to a single session id, so it
 always succeeds for an authenticated caller:
 `200` with a JSON array, empty when the caller has no active sessions.
 `GET /sessions/:id`, `GET /sessions/:id/events`, and
@@ -80,5 +97,8 @@ a `{kind:'error', message}` diagnostic frame — this is not part of the
   brand-new session) is not implemented — only commands on an
   already-started session (`inject_prompt`, `respond_to_permission`,
   `pause`, `resume`, `stop`).
-- Web Push notification delivery is not implemented — events are stored
-  and routed to connected clients only.
+- Web Push notifications fire for `permission_request`, `error`, and
+  `stopped` events, sent to every one of the recipient's browser devices
+  with a stored subscription. Delivery is best-effort: a failed send to
+  one device never blocks another device's, or the event's normal routing
+  to connected clients.

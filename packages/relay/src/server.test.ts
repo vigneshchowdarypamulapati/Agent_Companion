@@ -8,6 +8,7 @@ import type { Server } from 'node:http';
 import { createRelayServer } from './server.js';
 import { InMemoryStore } from './in-memory-store.js';
 import { InMemoryPubSub } from './in-memory-pubsub.js';
+import type { PushSender } from './push-sender.js';
 
 function waitForMessage(ws: WebSocket): Promise<any> {
   return new Promise((resolve) => {
@@ -485,5 +486,124 @@ describe('relay server', () => {
 
     expect(await tabACloses).toBe(4403);
     expect(await tabBCloses).toBe(4403);
+  });
+
+  // --- push notifications ---
+
+  it('returns 404 for GET /push/vapid-public-key when push is not configured', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer).get('/push/vapid-public-key');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns the configured VAPID public key', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      vapidPublicKey: 'test-public-key',
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer).get('/push/vapid-public-key');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ publicKey: 'test-public-key' });
+  });
+
+  it('returns 401 for POST /devices/push-subscription without an Authorization header', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer)
+      .post('/devices/push-subscription')
+      .send({ endpoint: 'https://push.example.com/x', keys: { p256dh: 'p', auth: 'a' } });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 400 for POST /devices/push-subscription with an invalid subscription body', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const token = await pair(httpServer, 'browser', 'phone');
+    const res = await request(httpServer)
+      .post('/devices/push-subscription')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ endpoint: 'https://push.example.com/x' });
+    expect(res.status).toBe(400);
+  });
+
+  it('a stored push subscription receives a notification when a qualifying event fires', async () => {
+    const store = new InMemoryStore();
+    const sent: unknown[] = [];
+    const pushSender: PushSender = {
+      send: async (subscription, payload) => {
+        sent.push({ subscription, payload });
+        return 'ok';
+      },
+    };
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), pushSender });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
+    const browserToken = await pair(httpServer, 'browser', 'phone');
+
+    const subscribeRes = await request(httpServer)
+      .post('/devices/push-subscription')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({ endpoint: 'https://push.example.com/x', keys: { p256dh: 'p', auth: 'a' } });
+    expect(subscribeRes.status).toBe(200);
+
+    const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
+    sockets.push(daemonWs);
+    await waitForOpen(daemonWs);
+    daemonWs.send(
+      JSON.stringify({
+        kind: 'event',
+        sessionId: 'sess-1',
+        seq: 0,
+        event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: Date.now() },
+      })
+    );
+    await expect
+      .poll(async () => (await store.getSession('sess-1'))?.id, { timeout: 2000 })
+      .toBe('sess-1');
+    daemonWs.send(
+      JSON.stringify({
+        kind: 'event',
+        sessionId: 'sess-1',
+        seq: 0,
+        event: { type: 'stopped', sessionId: 'sess-1', at: Date.now() },
+      })
+    );
+
+    await expect.poll(() => sent.length, { timeout: 2000 }).toBe(1);
+    expect(sent[0]).toMatchObject({ payload: { title: 'Session stopped', body: '/tmp/project' } });
+  });
+
+  it('clears the subscription after DELETE /devices/push-subscription', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const token = await pair(httpServer, 'browser', 'phone');
+    await request(httpServer)
+      .post('/devices/push-subscription')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ endpoint: 'https://push.example.com/x', keys: { p256dh: 'p', auth: 'a' } });
+
+    const deleteRes = await request(httpServer)
+      .delete('/devices/push-subscription')
+      .set('Authorization', `Bearer ${token}`);
+    expect(deleteRes.status).toBe(200);
+    expect(deleteRes.body).toEqual({ ok: true });
+  });
+
+  it('returns 401 for DELETE /devices/push-subscription without an Authorization header', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer).delete('/devices/push-subscription');
+    expect(res.status).toBe(401);
   });
 });
