@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router'
 import PairingScreen from './PairingScreen';
 import SessionList from './SessionList';
 import SessionDetail from './SessionDetail';
+import SettingsScreen from './SettingsScreen';
 import { SessionsProvider } from './SessionsProvider';
 import { clearStoredCredentials, getStoredCredentials } from './storage';
 
@@ -36,6 +37,10 @@ export default function App() {
           <Route
             path="/sessions/:id"
             element={<KeyedSessionDetail token={credentials.token} onUnauthorized={handleUnauthorized} />}
+          />
+          <Route
+            path="/settings"
+            element={<SettingsScreen token={credentials.token} onUnpaired={handleUnauthorized} />}
           />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

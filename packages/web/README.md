@@ -24,7 +24,7 @@ the WebSocket lives at a different host than the REST API.
 
 ## Views
 
-Two client-side routes (`react-router`), both behind the pairing gate in
+Three client-side routes (`react-router`), all behind the pairing gate in
 `App.tsx`:
 
 - `/` — `SessionList`: every one of the user's active sessions (including
@@ -33,12 +33,21 @@ Two client-side routes (`react-router`), both behind the pairing gate in
 - `/sessions/:id` — `SessionDetail`: the full live view of one session
   (activity feed, modified files, permission prompt, controls) — this is
   what `Dashboard` used to be before multi-session support.
+- `/settings` — `SettingsScreen`: this device's paired info (name, type,
+  paired date) and an "Unpair this device" action behind a confirm step.
+  Unpairing calls the relay to revoke the device's token server-side and
+  force-close any other live tab using it, then clears local storage and
+  returns to the pairing screen — there is no separate "logout" distinct
+  from unpairing, since the device token is the only credential this app
+  has.
 
-Both share a single WebSocket connection, owned by `SessionsProvider`
-(`src/SessionsProvider.tsx` + `src/use-sessions-store.ts`) above the router:
-the relay broadcasts every event for every one of a user's sessions to every
-one of their browser connections unscoped, so `SessionList` and
-`SessionDetail` both read off the same stream rather than opening their own.
+`SessionList` and `SessionDetail` share a single WebSocket connection,
+owned by `SessionsProvider` (`src/SessionsProvider.tsx` +
+`src/use-sessions-store.ts`) above the router: the relay broadcasts every
+event for every one of a user's sessions to every one of their browser
+connections unscoped, so both views read off the same stream rather than
+opening their own. `SettingsScreen` doesn't need this stream — it talks to
+the relay directly over REST (`src/api/devices.ts`).
 
 ## Follow-up (not in this plan)
 

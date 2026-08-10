@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import App from './App';
 import * as pairingApi from './api/pairing';
 import * as sessionsApi from './api/sessions';
+import * as devicesApi from './api/devices';
 import { clearStoredCredentials, storeCredentials } from './storage';
 import * as useRelayConnectionModule from './use-relay-connection';
 
@@ -59,5 +60,30 @@ describe('App', () => {
     render(<App />);
 
     expect(await screen.findByText('No active sessions.')).toBeInTheDocument();
+  });
+
+  it('shows the settings screen at /settings and returns to the pairing screen after a confirmed unpair', async () => {
+    storeCredentials({ token: 'tok-1', deviceId: 'dev-1' });
+    vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
+    vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
+      connected: true,
+      sendCommand: vi.fn(),
+    });
+    vi.spyOn(devicesApi, 'getDevice').mockResolvedValue({
+      id: 'dev-1',
+      type: 'browser',
+      name: 'Test Browser',
+      createdAt: 1,
+    });
+    vi.spyOn(devicesApi, 'unpairDevice').mockResolvedValue(undefined);
+    window.history.pushState({}, '', '/settings');
+
+    render(<App />);
+
+    await screen.findByText('Test Browser');
+    await userEvent.click(screen.getByRole('button', { name: /unpair this device/i }));
+    await userEvent.click(screen.getByRole('button', { name: /confirm unpair/i }));
+
+    expect(await screen.findByText('Pair this device')).toBeInTheDocument();
   });
 });
