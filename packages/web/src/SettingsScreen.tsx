@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { getDevice, unpairDevice, type DeviceInfo } from './api/devices';
 import { UnauthorizedError } from './api/sessions';
+import { getVapidPublicKey } from './api/push';
+import {
+  isPushSupported,
+  getPermissionState,
+  getExistingSubscriptionState,
+  enablePush,
+  disablePush,
+} from './push-notifications';
 
 export interface SettingsScreenProps {
   token: string;
@@ -14,6 +22,11 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
   const [confirming, setConfirming] = useState(false);
   const [unpairError, setUnpairError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const [pushAvailable, setPushAvailable] = useState(false);
+  const [pushPermission, setPushPermission] = useState<NotificationPermission>('default');
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushError, setPushError] = useState<string | undefined>();
   const onUnpairedRef = useRef(onUnpaired);
   onUnpairedRef.current = onUnpaired;
 
@@ -36,6 +49,23 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
     };
   }, [token]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPushState() {
+      if (!isPushSupported()) return;
+      const publicKey = await getVapidPublicKey();
+      if (cancelled || !publicKey) return;
+      setPushAvailable(true);
+      setPushPermission(getPermissionState());
+      const state = await getExistingSubscriptionState();
+      if (!cancelled) setPushSubscribed(state === 'subscribed');
+    }
+    void loadPushState();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function handleUnpair() {
     setBusy(true);
     setUnpairError(undefined);
@@ -50,6 +80,42 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
       setUnpairError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleEnablePush() {
+    setPushBusy(true);
+    setPushError(undefined);
+    try {
+      await enablePush(token);
+      setPushSubscribed(true);
+      setPushPermission(getPermissionState());
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnpairedRef.current();
+        return;
+      }
+      setPushError(err instanceof Error ? err.message : String(err));
+      setPushPermission(getPermissionState());
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function handleDisablePush() {
+    setPushBusy(true);
+    setPushError(undefined);
+    try {
+      await disablePush(token);
+      setPushSubscribed(false);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnpairedRef.current();
+        return;
+      }
+      setPushError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPushBusy(false);
     }
   }
 
@@ -73,6 +139,44 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
           <p className="font-medium">{device.name}</p>
           <p className="text-sm text-slate-400 capitalize">{device.type}</p>
           <p className="text-sm text-slate-400">Paired {new Date(device.createdAt).toLocaleDateString()}</p>
+        </div>
+      )}
+
+      {pushAvailable && (
+        <div className="border-t border-slate-700 pt-4 space-y-3">
+          <h2 className="text-sm font-medium text-slate-300">Notifications</h2>
+          {pushPermission === 'denied' ? (
+            <p className="text-sm text-slate-400">
+              Notifications are blocked in your browser settings. Change your browser's site permissions to enable
+              them.
+            </p>
+          ) : pushSubscribed ? (
+            <div className="space-y-2">
+              <p className="text-sm text-slate-400">Notifications are enabled for this device.</p>
+              <button
+                type="button"
+                onClick={handleDisablePush}
+                disabled={pushBusy}
+                className="w-full rounded-md bg-slate-800 px-3 py-2 font-medium disabled:opacity-50"
+              >
+                {pushBusy ? 'Disabling…' : 'Disable notifications'}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={handleEnablePush}
+              disabled={pushBusy}
+              className="w-full rounded-md bg-blue-600 px-3 py-2 font-medium disabled:opacity-50"
+            >
+              {pushBusy ? 'Enabling…' : 'Enable notifications'}
+            </button>
+          )}
+          {pushError && (
+            <p role="alert" className="text-sm text-red-400">
+              {pushError}
+            </p>
+          )}
         </div>
       )}
 

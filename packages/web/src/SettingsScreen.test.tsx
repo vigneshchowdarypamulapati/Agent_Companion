@@ -5,6 +5,8 @@ import { MemoryRouter } from 'react-router';
 import SettingsScreen from './SettingsScreen';
 import * as devicesApi from './api/devices';
 import { UnauthorizedError } from './api/sessions';
+import * as pushApi from './api/push';
+import * as pushNotifications from './push-notifications';
 
 function renderSettings(token = 'tok-1', onUnpaired = vi.fn()) {
   render(
@@ -155,5 +157,139 @@ describe('SettingsScreen', () => {
 
     await screen.findByText('Chrome on Mac');
     expect(screen.getByRole('link', { name: /back/i })).toHaveAttribute('href', '/');
+  });
+
+  describe('notifications section', () => {
+    function mockDeviceLoad() {
+      vi.spyOn(devicesApi, 'getDevice').mockResolvedValue({
+        id: 'dev-1',
+        type: 'browser',
+        name: 'Chrome on Mac',
+        createdAt: 1,
+      });
+    }
+
+    it('renders nothing when push is not supported by the browser', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(false);
+
+      renderSettings();
+
+      await screen.findByText('Chrome on Mac');
+      expect(screen.queryByText('Notifications')).not.toBeInTheDocument();
+    });
+
+    it('renders nothing when the relay has no VAPID key configured', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
+      vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue(undefined);
+
+      renderSettings();
+
+      await screen.findByText('Chrome on Mac');
+      expect(screen.queryByText('Notifications')).not.toBeInTheDocument();
+    });
+
+    it('shows an Enable button when push is available but not yet subscribed', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
+      vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
+      vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('default');
+      vi.spyOn(pushNotifications, 'getExistingSubscriptionState').mockResolvedValue('unsubscribed');
+
+      renderSettings();
+
+      expect(await screen.findByRole('button', { name: /enable notifications/i })).toBeInTheDocument();
+    });
+
+    it('shows a Disable button when already subscribed', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
+      vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
+      vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('granted');
+      vi.spyOn(pushNotifications, 'getExistingSubscriptionState').mockResolvedValue('subscribed');
+
+      renderSettings();
+
+      expect(await screen.findByRole('button', { name: /disable notifications/i })).toBeInTheDocument();
+    });
+
+    it('shows a blocked message instead of a button when permission was previously denied', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
+      vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
+      vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('denied');
+      vi.spyOn(pushNotifications, 'getExistingSubscriptionState').mockResolvedValue('unsubscribed');
+
+      renderSettings();
+
+      expect(await screen.findByText(/blocked in your browser settings/i)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /enable notifications/i })).not.toBeInTheDocument();
+    });
+
+    it('enables push notifications and shows the Disable button after clicking Enable', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
+      vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
+      vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('default');
+      vi.spyOn(pushNotifications, 'getExistingSubscriptionState').mockResolvedValue('unsubscribed');
+      const enablePush = vi.spyOn(pushNotifications, 'enablePush').mockResolvedValue(undefined);
+
+      renderSettings();
+
+      await userEvent.click(await screen.findByRole('button', { name: /enable notifications/i }));
+
+      expect(enablePush).toHaveBeenCalledWith('tok-1');
+      expect(await screen.findByRole('button', { name: /disable notifications/i })).toBeInTheDocument();
+    });
+
+    it('shows an inline error and does not change state when enabling push fails', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
+      vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
+      vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('default');
+      vi.spyOn(pushNotifications, 'getExistingSubscriptionState').mockResolvedValue('unsubscribed');
+      vi.spyOn(pushNotifications, 'enablePush').mockRejectedValue(
+        new Error('Notification permission was not granted')
+      );
+
+      renderSettings();
+
+      await userEvent.click(await screen.findByRole('button', { name: /enable notifications/i }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Notification permission was not granted');
+      expect(screen.getByRole('button', { name: /enable notifications/i })).toBeInTheDocument();
+    });
+
+    it('disables push notifications and shows the Enable button after clicking Disable', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
+      vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
+      vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('granted');
+      vi.spyOn(pushNotifications, 'getExistingSubscriptionState').mockResolvedValue('subscribed');
+      const disablePush = vi.spyOn(pushNotifications, 'disablePush').mockResolvedValue(undefined);
+
+      renderSettings();
+
+      await userEvent.click(await screen.findByRole('button', { name: /disable notifications/i }));
+
+      expect(disablePush).toHaveBeenCalledWith('tok-1');
+      expect(await screen.findByRole('button', { name: /enable notifications/i })).toBeInTheDocument();
+    });
+
+    it('calls onUnpaired if enabling push gets a 401', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
+      vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
+      vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('default');
+      vi.spyOn(pushNotifications, 'getExistingSubscriptionState').mockResolvedValue('unsubscribed');
+      vi.spyOn(pushNotifications, 'enablePush').mockRejectedValue(new UnauthorizedError());
+
+      const onUnpaired = renderSettings();
+
+      await userEvent.click(await screen.findByRole('button', { name: /enable notifications/i }));
+
+      await waitFor(() => expect(onUnpaired).toHaveBeenCalled());
+    });
   });
 });

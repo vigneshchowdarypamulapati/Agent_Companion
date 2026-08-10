@@ -34,12 +34,13 @@ Three client-side routes (`react-router`), all behind the pairing gate in
   (activity feed, modified files, permission prompt, controls) — this is
   what `Dashboard` used to be before multi-session support.
 - `/settings` — `SettingsScreen`: this device's paired info (name, type,
-  paired date) and an "Unpair this device" action behind a confirm step.
-  Unpairing calls the relay to revoke the device's token server-side and
-  force-close any other live tab using it, then clears local storage and
-  returns to the pairing screen — there is no separate "logout" distinct
-  from unpairing, since the device token is the only credential this app
-  has.
+  paired date), an "Unpair this device" action behind a confirm step, and
+  (when the browser supports Push and the relay has VAPID keys configured)
+  a notifications toggle for this device. Unpairing calls the relay to
+  revoke the device's token server-side and force-close any other live tab
+  using it, then clears local storage and returns to the pairing screen —
+  there is no separate "logout" distinct from unpairing, since the device
+  token is the only credential this app has.
 
 `SessionList` and `SessionDetail` share a single WebSocket connection,
 owned by `SessionsProvider` (`src/SessionsProvider.tsx` +
@@ -49,7 +50,21 @@ connections unscoped, so both views read off the same stream rather than
 opening their own. `SettingsScreen` doesn't need this stream — it talks to
 the relay directly over REST (`src/api/devices.ts`).
 
+## Service Worker
+
+`vite-plugin-pwa` uses the `injectManifest` strategy with a custom source
+file at `src/sw.ts` (rather than the default `generateSW`), specifically so
+it can add `push`/`notificationclick` listeners alongside the standard
+offline-caching precache route — `generateSW` only ever produces a
+precaching-only service worker with no hook for custom event handlers.
+
+iOS Safari only supports Web Push for a PWA that's been added to the home
+screen, not a regular browser tab — a platform constraint outside this
+app's control. `SettingsScreen`'s notifications section hides itself
+wherever `isPushSupported()` returns false, which covers this case without
+any special detection: iOS Safari simply doesn't expose `PushManager` in an
+un-installed tab.
+
 ## Follow-up (not in this plan)
 
 - Real PWA icon set (`vite.config.ts`'s `manifest.icons` is currently empty).
-- Web Push notifications — the relay doesn't implement delivery yet.
