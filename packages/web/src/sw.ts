@@ -33,17 +33,17 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const url = (event.notification.data as { url: string } | undefined)?.url ?? '/';
   event.waitUntil(
-    self.clients.matchAll({ type: 'window' }).then((clients) => {
-      for (const client of clients) {
-        if ('focus' in client) {
-          void client.focus();
-          if ('navigate' in client) {
-            void (client as WindowClient).navigate(url);
-          }
-          return;
+    (async () => {
+      const clients = await self.clients.matchAll({ type: 'window' });
+      const client = clients.find((c): c is WindowClient => 'focus' in c);
+      if (client) {
+        if (new URL(client.url).pathname !== url) {
+          await client.navigate(url);
         }
+        await client.focus();
+        return;
       }
-      return self.clients.openWindow(url);
-    })
+      await self.clients.openWindow(url);
+    })()
   );
 });

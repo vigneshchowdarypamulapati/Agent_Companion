@@ -60,7 +60,10 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
       const state = await getExistingSubscriptionState();
       if (!cancelled) setPushSubscribed(state === 'subscribed');
     }
-    void loadPushState();
+    // An unreachable relay or unexpected error here legitimately means "no notifications
+    // section" — same as the VAPID-not-configured case above — so this is swallowed rather
+    // than surfaced as a loadError.
+    void loadPushState().catch(() => {});
     return () => {
       cancelled = true;
     };

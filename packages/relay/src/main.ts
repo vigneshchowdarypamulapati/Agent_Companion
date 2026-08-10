@@ -24,7 +24,12 @@ if (!pushSender) {
 
 const store = new InMemoryStore();
 const pubsub = new InMemoryPubSub();
-const httpServer = await createRelayServer({ store, pubsub, pushSender, vapidPublicKey });
+const httpServer = await createRelayServer({
+  store,
+  pubsub,
+  pushSender,
+  vapidPublicKey: pushSender ? vapidPublicKey : undefined,
+});
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`Companion relay listening on http://${HOST}:${PORT}`);

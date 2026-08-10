@@ -24,4 +24,20 @@ describe('PushSubscriptionPayload schema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('rejects an endpoint that is not a valid URL', () => {
+    const result = PushSubscriptionPayload.safeParse({
+      endpoint: 'not-a-url',
+      keys: { p256dh: 'key-p256dh', auth: 'key-auth' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a non-https endpoint', () => {
+    const result = PushSubscriptionPayload.safeParse({
+      endpoint: 'http://push.example.com/abc123',
+      keys: { p256dh: 'key-p256dh', auth: 'key-auth' },
+    });
+    expect(result.success).toBe(false);
+  });
 });
