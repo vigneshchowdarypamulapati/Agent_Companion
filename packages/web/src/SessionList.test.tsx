@@ -71,7 +71,14 @@ describe('SessionList', () => {
       sessions: [{ id: 'sess-a', projectPath: '/tmp/a', status: 'running', lastEventAt: 1 }],
     });
     renderList();
-    expect(screen.getByRole('link')).toHaveAttribute('href', '/sessions/sess-a');
+    const cardLink = screen.getAllByRole('link').find((link) => link.getAttribute('href') === '/sessions/sess-a');
+    expect(cardLink).toBeDefined();
+  });
+
+  it('links to the settings screen', () => {
+    mockSessions();
+    renderList();
+    expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings');
   });
 
   it('shows a Dismiss button only for stopped sessions', () => {

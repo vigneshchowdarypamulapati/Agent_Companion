@@ -32,9 +32,14 @@ export default function SessionList() {
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 space-y-4 max-w-lg mx-auto">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Sessions</h1>
-        <span className={`text-xs px-2 py-1 rounded-full ${connected ? 'bg-green-700' : 'bg-red-700'}`}>
-          {connected ? 'live' : 'reconnecting…'}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs px-2 py-1 rounded-full ${connected ? 'bg-green-700' : 'bg-red-700'}`}>
+            {connected ? 'live' : 'reconnecting…'}
+          </span>
+          <Link to="/settings" className="text-xs text-slate-400 underline">
+            Settings
+          </Link>
+        </div>
       </div>
 
       {loadError && (
