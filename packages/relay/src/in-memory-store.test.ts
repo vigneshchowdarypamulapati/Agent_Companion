@@ -27,6 +27,26 @@ describe('InMemoryStore', () => {
     expect(await store.getDeviceByTokenHash('does-not-exist')).toBeUndefined();
   });
 
+  it('deleteDevice removes the device so its token no longer authenticates', async () => {
+    const store = new InMemoryStore();
+    const user = await store.getOrCreateDefaultUser();
+    const device = await store.createDevice({
+      userId: user.id,
+      type: 'browser',
+      name: 'phone',
+      tokenHash: 'hash-2',
+    });
+
+    await store.deleteDevice(device.id);
+
+    expect(await store.getDeviceByTokenHash('hash-2')).toBeUndefined();
+  });
+
+  it('deleteDevice is a no-op for an unknown device id', async () => {
+    const store = new InMemoryStore();
+    await expect(store.deleteDevice('does-not-exist')).resolves.toBeUndefined();
+  });
+
   it('a pairing code can only be consumed once', async () => {
     const store = new InMemoryStore();
     const user = await store.getOrCreateDefaultUser();

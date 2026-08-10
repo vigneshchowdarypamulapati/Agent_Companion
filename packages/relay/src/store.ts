@@ -51,6 +51,7 @@ export interface Store {
     tokenHash: string;
   }): Promise<Device>;
   getDeviceByTokenHash(tokenHash: string): Promise<Device | undefined>;
+  deleteDevice(deviceId: string): Promise<void>;
   createPairingCode(userId: string): Promise<PairingCode>;
   consumePairingCode(code: string): Promise<PairingCode | undefined>;
   upsertSession(session: SessionRecord): Promise<void>;

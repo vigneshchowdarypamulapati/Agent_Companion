@@ -51,6 +51,13 @@ export class InMemoryStore implements Store {
     return id ? this.devices.get(id) : undefined;
   }
 
+  async deleteDevice(deviceId: string): Promise<void> {
+    const device = this.devices.get(deviceId);
+    if (!device) return;
+    this.devices.delete(deviceId);
+    this.devicesByTokenHash.delete(device.tokenHash);
+  }
+
   async createPairingCode(userId: string): Promise<PairingCode> {
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
     const pairing: PairingCode = {
