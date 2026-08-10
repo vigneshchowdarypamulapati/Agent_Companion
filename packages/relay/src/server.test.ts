@@ -414,4 +414,76 @@ describe('relay server', () => {
     const res = await request(httpServer).post('/sessions/sess-1/dismiss');
     expect(res.status).toBe(401);
   });
+
+  // --- GET /devices/me ---
+
+  it("returns the authenticated device's own info", async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const token = await pair(httpServer, 'browser', 'phone');
+    const res = await request(httpServer).get('/devices/me').set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: 'browser', name: 'phone' });
+    expect(res.body.id).toEqual(expect.any(String));
+    expect(res.body.createdAt).toEqual(expect.any(Number));
+    expect(res.body).not.toHaveProperty('tokenHash');
+    expect(res.body).not.toHaveProperty('userId');
+  });
+
+  it('returns 401 for GET /devices/me without an Authorization header', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer).get('/devices/me');
+    expect(res.status).toBe(401);
+  });
+
+  // --- POST /devices/unpair ---
+
+  it('unpairs the device: the endpoint succeeds and the token stops authenticating', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const token = await pair(httpServer, 'browser', 'phone');
+
+    const unpairRes = await request(httpServer).post('/devices/unpair').set('Authorization', `Bearer ${token}`);
+    expect(unpairRes.status).toBe(200);
+    expect(unpairRes.body).toEqual({ ok: true });
+
+    const followUp = await request(httpServer).get('/devices/me').set('Authorization', `Bearer ${token}`);
+    expect(followUp.status).toBe(401);
+  });
+
+  it('returns 401 for POST /devices/unpair without an Authorization header', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer).post('/devices/unpair');
+    expect(res.status).toBe(401);
+  });
+
+  it('force-closes every other live connection authenticated as the unpaired device', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const token = await pair(httpServer, 'browser', 'phone');
+
+    // Two tabs sharing the same paired browser's token.
+    const tabA = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
+    const tabB = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
+    sockets.push(tabA, tabB);
+    await Promise.all([waitForOpen(tabA), waitForOpen(tabB)]);
+
+    const tabACloses = new Promise<number>((resolve) => tabA.once('close', (code) => resolve(code)));
+    const tabBCloses = new Promise<number>((resolve) => tabB.once('close', (code) => resolve(code)));
+
+    const unpairRes = await request(httpServer).post('/devices/unpair').set('Authorization', `Bearer ${token}`);
+    expect(unpairRes.status).toBe(200);
+
+    expect(await tabACloses).toBe(4403);
+    expect(await tabBCloses).toBe(4403);
+  });
 });

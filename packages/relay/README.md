@@ -19,6 +19,14 @@ publicly reachable) to configure the listener.
   pairing code for the (single, v1) default user.
 - `POST /pairing/redeem` `{ code, deviceType, deviceName }` — exchange a
   pairing code for a long-lived device token.
+- `GET /devices/me` — the calling device's own `{ id, type, name, createdAt }`
+  (never includes `tokenHash` or `userId`).
+- `POST /devices/unpair` — revokes the calling device's token so it can
+  never authenticate again, and force-closes any other live WebSocket
+  connections currently authenticated as that device. `200 { ok: true }`
+  on success. There is no way to unpair a device other than the one making
+  the request — the target is always the caller, identified by its own
+  bearer token.
 - `GET /sessions/active` — every one of the caller's sessions that isn't
   dismissed: anything not yet stopped, plus anything stopped but not yet
   dismissed. `200` with a (possibly empty) JSON array.
@@ -28,9 +36,10 @@ publicly reachable) to configure the listener.
 - `GET /sessions/:id` — current session status (for reconnect/catch-up).
 - `GET /sessions/:id/events?since=<seq>` — session event history.
 
-All four `/sessions*` routes require `Authorization: Bearer <device-token>`;
-unauthenticated requests get `401`. `GET /sessions/active` isn't scoped to a
-single session id, so it always succeeds for an authenticated caller:
+`GET /devices/me`, `POST /devices/unpair`, and all four `/sessions*` routes
+require `Authorization: Bearer <device-token>`; unauthenticated requests get
+`401`. `GET /sessions/active` isn't scoped to a single session id, so it
+always succeeds for an authenticated caller:
 `200` with a JSON array, empty when the caller has no active sessions.
 `GET /sessions/:id`, `GET /sessions/:id/events`, and
 `POST /sessions/:id/dismiss` only serve sessions belonging to that device's
@@ -46,7 +55,9 @@ cannot set headers on a WebSocket handshake — REST calls use the
 `Authorization` header instead). Daemons send `{kind:'event', ...}`
 messages; browsers send `{kind:'command', ...}` messages. The server
 routes events to every browser connection for the same user, and commands
-to the daemon connections of the device that owns the target session.
+to the daemon connections of the device that owns the target session. A
+connection is force-closed with code `4403` if its device is unpaired
+(`POST /devices/unpair`) while still connected.
 
 Events forwarded to browsers carry the store-assigned `seq`, so a client
 can reconcile a `?since=<seq>` history fetch against the live stream

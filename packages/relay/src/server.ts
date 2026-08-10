@@ -133,6 +133,37 @@ export async function createRelayServer({ store, pubsub }: RelayServerOptions): 
     })
   );
 
+  app.get(
+    '/devices/me',
+    asyncHandler(async (req, res) => {
+      const device = await authenticate(req, pairing);
+      if (!device) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      res.status(200).json({
+        id: device.id,
+        type: device.type,
+        name: device.name,
+        createdAt: device.createdAt,
+      });
+    })
+  );
+
+  app.post(
+    '/devices/unpair',
+    asyncHandler(async (req, res) => {
+      const device = await authenticate(req, pairing);
+      if (!device) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      hub.disconnectDevice(device.id);
+      await store.deleteDevice(device.id);
+      res.status(200).json({ ok: true });
+    })
+  );
+
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const message = err instanceof Error ? err.message : String(err);
     res.status(400).json({ error: message });
@@ -168,6 +199,7 @@ export async function createRelayServer({ store, pubsub }: RelayServerOptions): 
           userId: device.userId,
           deviceType: device.type,
           send: (message) => ws.send(JSON.stringify(message)),
+          close: () => ws.close(4403, 'Device unpaired'),
         };
         hub.register(connection);
 
