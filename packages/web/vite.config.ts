@@ -8,6 +8,14 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
+      // injectManifest (not the default generateSW) is required so src/sw.ts can add its own
+      // push/notificationclick listeners — generateSW only ever produces a precaching-only
+      // service worker with no hook for custom event handlers. The SPA navigation fallback
+      // that used to be configured here via workbox.navigateFallback is now implemented
+      // directly in src/sw.ts via workbox-routing's NavigationRoute.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       registerType: 'autoUpdate',
       manifest: {
         name: 'Claude Companion',
@@ -16,12 +24,6 @@ export default defineConfig({
         display: 'standalone',
         background_color: '#0f172a',
         theme_color: '#0f172a',
-      },
-      workbox: {
-        // The app now has real client-side routes (/sessions/:id); without
-        // this, a direct or offline-cached navigation to one falls through
-        // to a 404 instead of the SPA shell that client-side routing needs.
-        navigateFallback: '/index.html',
       },
     }),
   ],
