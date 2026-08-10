@@ -1,4 +1,4 @@
-import type { SessionEvent, SessionStatus } from '@companion/protocol';
+import type { PushSubscriptionPayload, SessionEvent, SessionStatus } from '@companion/protocol';
 
 export interface User {
   id: string;
@@ -13,6 +13,7 @@ export interface Device {
   name: string;
   tokenHash: string;
   createdAt: number;
+  pushSubscription?: PushSubscriptionPayload;
 }
 
 export interface PairingCode {
@@ -52,6 +53,8 @@ export interface Store {
   }): Promise<Device>;
   getDeviceByTokenHash(tokenHash: string): Promise<Device | undefined>;
   deleteDevice(deviceId: string): Promise<void>;
+  setPushSubscription(deviceId: string, subscription: PushSubscriptionPayload | undefined): Promise<void>;
+  getDevicesForUser(userId: string): Promise<Device[]>;
   createPairingCode(userId: string): Promise<PairingCode>;
   consumePairingCode(code: string): Promise<PairingCode | undefined>;
   upsertSession(session: SessionRecord): Promise<void>;

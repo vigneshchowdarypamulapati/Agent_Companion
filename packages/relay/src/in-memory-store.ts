@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import type { SessionEvent, SessionStatus } from '@companion/protocol';
+import type { PushSubscriptionPayload, SessionEvent, SessionStatus } from '@companion/protocol';
 import type {
   Device,
   DismissSessionResult,
@@ -61,6 +61,16 @@ export class InMemoryStore implements Store {
     if (!device) return;
     this.devices.delete(deviceId);
     this.devicesByTokenHash.delete(device.tokenHash);
+  }
+
+  async setPushSubscription(deviceId: string, subscription: PushSubscriptionPayload | undefined): Promise<void> {
+    const device = this.devices.get(deviceId);
+    if (!device) return;
+    device.pushSubscription = subscription;
+  }
+
+  async getDevicesForUser(userId: string): Promise<Device[]> {
+    return [...this.devices.values()].filter((d) => d.userId === userId);
   }
 
   async createPairingCode(userId: string): Promise<PairingCode> {

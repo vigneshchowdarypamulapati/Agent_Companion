@@ -47,6 +47,61 @@ describe('InMemoryStore', () => {
     await expect(store.deleteDevice('does-not-exist')).resolves.toBeUndefined();
   });
 
+  it('setPushSubscription stores a subscription on the device', async () => {
+    const store = new InMemoryStore();
+    const user = await store.getOrCreateDefaultUser();
+    const device = await store.createDevice({
+      userId: user.id,
+      type: 'browser',
+      name: 'phone',
+      tokenHash: 'hash-3',
+    });
+    const subscription = { endpoint: 'https://push.example.com/abc', keys: { p256dh: 'p', auth: 'a' } };
+
+    await store.setPushSubscription(device.id, subscription);
+
+    const devices = await store.getDevicesForUser(user.id);
+    expect(devices.find((d) => d.id === device.id)?.pushSubscription).toEqual(subscription);
+  });
+
+  it('setPushSubscription with undefined clears an existing subscription', async () => {
+    const store = new InMemoryStore();
+    const user = await store.getOrCreateDefaultUser();
+    const device = await store.createDevice({
+      userId: user.id,
+      type: 'browser',
+      name: 'phone',
+      tokenHash: 'hash-4',
+    });
+    await store.setPushSubscription(device.id, {
+      endpoint: 'https://push.example.com/abc',
+      keys: { p256dh: 'p', auth: 'a' },
+    });
+
+    await store.setPushSubscription(device.id, undefined);
+
+    const devices = await store.getDevicesForUser(user.id);
+    expect(devices.find((d) => d.id === device.id)?.pushSubscription).toBeUndefined();
+  });
+
+  it('setPushSubscription is a no-op for an unknown device id', async () => {
+    const store = new InMemoryStore();
+    await expect(
+      store.setPushSubscription('does-not-exist', { endpoint: 'x', keys: { p256dh: 'p', auth: 'a' } })
+    ).resolves.toBeUndefined();
+  });
+
+  it('getDevicesForUser returns only devices belonging to that user', async () => {
+    const store = new InMemoryStore();
+    await store.createDevice({ userId: 'user-1', type: 'browser', name: 'phone', tokenHash: 'hash-5' });
+    await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-6' });
+    await store.createDevice({ userId: 'user-2', type: 'browser', name: 'intruder', tokenHash: 'hash-7' });
+
+    const devices = await store.getDevicesForUser('user-1');
+
+    expect(devices.map((d) => d.name).sort()).toEqual(['laptop', 'phone']);
+  });
+
   it('a pairing code can only be consumed once', async () => {
     const store = new InMemoryStore();
     const user = await store.getOrCreateDefaultUser();
