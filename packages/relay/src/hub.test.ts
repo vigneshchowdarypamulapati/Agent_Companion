@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { ConnectionHub, type Connection, type RelayHubMessage } from './hub.js';
 import { InMemoryStore } from './in-memory-store.js';
 import { InMemoryPubSub } from './in-memory-pubsub.js';
+import type { PushPayload, PushSendResult, PushSender } from './push-sender.js';
+import type { PushSubscriptionPayload } from '@companion/protocol';
 
 function fakeConnection(overrides: Partial<Connection> = {}): Connection & { sent: RelayHubMessage[]; closed: { value: boolean } } {
   const sent: RelayHubMessage[] = [];
@@ -17,6 +19,20 @@ function fakeConnection(overrides: Partial<Connection> = {}): Connection & { sen
     sent,
     closed,
     ...overrides,
+  };
+}
+
+function fakePushSender(result: PushSendResult | 'throw' = 'ok'): PushSender & {
+  sent: { subscription: PushSubscriptionPayload; payload: PushPayload }[];
+} {
+  const sent: { subscription: PushSubscriptionPayload; payload: PushPayload }[] = [];
+  return {
+    sent,
+    send: async (subscription, payload) => {
+      sent.push({ subscription, payload });
+      if (result === 'throw') throw new Error('push service unavailable');
+      return result;
+    },
   };
 }
 
@@ -603,6 +619,266 @@ describe('ConnectionHub', () => {
 
       const session = await store.getSession('sess-1');
       expect(session?.status).toBe('stopped');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // --- push notifications ---
+
+  const subscriptionA = { endpoint: 'https://push.example.com/a', keys: { p256dh: 'p-a', auth: 'a-a' } };
+  const subscriptionB = { endpoint: 'https://push.example.com/b', keys: { p256dh: 'p-b', auth: 'a-b' } };
+
+  it('sends a push notification to a subscribed browser device on a permission_request event', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const user = await store.getOrCreateDefaultUser();
+    const browserDevice = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    await store.setPushSubscription(browserDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'permission_request',
+      sessionId: 'sess-1',
+      requestId: 'req-1',
+      toolName: 'Bash',
+      input: {},
+      at: 2,
+    });
+
+    expect(pushSender.sent).toHaveLength(1);
+    expect(pushSender.sent[0]).toMatchObject({
+      subscription: subscriptionA,
+      payload: { title: 'Needs your permission', body: '/tmp/project', url: '/sessions/sess-1' },
+    });
+  });
+
+  it('sends a push notification on error and stopped events', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const user = await store.getOrCreateDefaultUser();
+    const browserDevice = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    await store.setPushSubscription(browserDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'error', sessionId: 'sess-1', message: 'boom', at: 2 });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 3 });
+
+    expect(pushSender.sent.map((s) => s.payload.title)).toEqual(['Session error', 'Session stopped']);
+  });
+
+  it('does not send a push notification for a non-qualifying event type', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const user = await store.getOrCreateDefaultUser();
+    const browserDevice = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    await store.setPushSubscription(browserDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 2 });
+
+    expect(pushSender.sent).toHaveLength(0);
+  });
+
+  it('does not send a push notification to a browser device with no subscription', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const user = await store.getOrCreateDefaultUser();
+    await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 2 });
+
+    expect(pushSender.sent).toHaveLength(0);
+  });
+
+  it('sends a push notification to every subscribed browser device for the user', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const user = await store.getOrCreateDefaultUser();
+    const deviceA = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const deviceB = await store.createDevice({
+      userId: user.id,
+      type: 'browser',
+      name: 'laptop-browser',
+      tokenHash: 'h2',
+    });
+    await store.setPushSubscription(deviceA.id, subscriptionA);
+    await store.setPushSubscription(deviceB.id, subscriptionB);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 2 });
+
+    expect(pushSender.sent.map((s) => s.subscription)).toEqual(expect.arrayContaining([subscriptionA, subscriptionB]));
+    expect(pushSender.sent).toHaveLength(2);
+  });
+
+  it('does not send a push notification to the daemon device itself', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const user = await store.getOrCreateDefaultUser();
+    const daemonDevice = await store.createDevice({ userId: user.id, type: 'daemon', name: 'laptop', tokenHash: 'h1' });
+    // A daemon device could in principle have a pushSubscription field set (nothing in the
+    // Store forbids it); the hub must still never target daemon-typed devices.
+    await store.setPushSubscription(daemonDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId: user.id });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 2 });
+
+    expect(pushSender.sent).toHaveLength(0);
+  });
+
+  it("clears a device's subscription when the push sender reports it is gone", async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender('gone');
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const user = await store.getOrCreateDefaultUser();
+    const browserDevice = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    await store.setPushSubscription(browserDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 2 });
+
+    const devices = await store.getDevicesForUser(user.id);
+    expect(devices.find((d) => d.id === browserDevice.id)?.pushSubscription).toBeUndefined();
+  });
+
+  it("one device's push failure does not prevent another device's push from being sent", async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender('throw');
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const user = await store.getOrCreateDefaultUser();
+    const deviceA = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const deviceB = await store.createDevice({
+      userId: user.id,
+      type: 'browser',
+      name: 'laptop-browser',
+      tokenHash: 'h2',
+    });
+    await store.setPushSubscription(deviceA.id, subscriptionA);
+    await store.setPushSubscription(deviceB.id, subscriptionB);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+
+    await expect(
+      hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 2 })
+    ).resolves.toBeUndefined();
+
+    // Both sends were attempted despite both throwing — routeFromDaemon itself never rejects.
+    expect(pushSender.sent).toHaveLength(2);
+  });
+
+  it('does not attempt to send a push notification when no pushSender is configured', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const user = await store.getOrCreateDefaultUser();
+    const browserDevice = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    await store.setPushSubscription(browserDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await expect(
+      hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 2 })
+    ).resolves.toBeUndefined();
+  });
+
+  it("a daemon disconnect's grace-period stop also sends a push notification", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new InMemoryStore();
+      const pushSender = fakePushSender();
+      const hub = new ConnectionHub(store, new InMemoryPubSub(), 1000, undefined, pushSender);
+      await hub.start();
+      const user = await store.getOrCreateDefaultUser();
+      const browserDevice = await store.createDevice({
+        userId: user.id,
+        type: 'browser',
+        name: 'phone',
+        tokenHash: 'h1',
+      });
+      await store.setPushSubscription(browserDevice.id, subscriptionA);
+      const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+      hub.register(daemon);
+
+      await hub.routeFromDaemon(daemon, 'sess-1', {
+        type: 'session_started',
+        sessionId: 'sess-1',
+        projectPath: '/tmp/project',
+        at: 1,
+      });
+
+      hub.unregister(daemon);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(pushSender.sent).toHaveLength(1);
+      expect(pushSender.sent[0].payload.title).toBe('Session stopped');
     } finally {
       vi.useRealTimers();
     }

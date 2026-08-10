@@ -1,6 +1,7 @@
 import type { Command, SessionEvent, SessionStatus } from '@companion/protocol';
 import type { Store } from './store.js';
 import type { PubSub } from './pubsub.js';
+import type { PushPayload, PushSender } from './push-sender.js';
 
 export interface Connection {
   readonly deviceId: string;
@@ -28,6 +29,18 @@ const STATUS_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], SessionStatus>>
   error: 'stopped',
 };
 
+/**
+ * Event types that trigger a push notification, and the notification title for each. A type
+ * absent from this map never notifies — this is the single source of truth for "which events
+ * are worth waking someone's phone up for" (currently: a permission prompt blocking the
+ * session, an error, or the session stopping).
+ */
+const NOTIFICATION_TITLE_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], string>> = {
+  permission_request: 'Needs your permission',
+  error: 'Session error',
+  stopped: 'Session stopped',
+};
+
 const CHANNEL = 'relay:message';
 
 /** How long a daemon's sessions stay non-stopped after its last connection drops, before being
@@ -53,7 +66,8 @@ export class ConnectionHub {
     private store: Store,
     private pubsub: PubSub,
     private graceMs: number = DEFAULT_DAEMON_DISCONNECT_GRACE_MS,
-    private now: () => number = Date.now
+    private now: () => number = Date.now,
+    private pushSender?: PushSender
   ) {}
 
   /** Must be awaited before the hub will receive any routed messages. */
@@ -121,8 +135,10 @@ export class ConnectionHub {
    * Marks every non-stopped session owned by a now-fully-disconnected daemon as stopped, the same
    * way a genuine `stopped` event from that daemon would be handled: store status updated, event
    * appended to the session's log, broadcast live to the user's browsers with a store-assigned
-   * seq. Runs `graceMs` after the daemon's last connection closes; cancelled by a reconnect within
-   * that window (see `register`).
+   * seq, AND a push notification sent the same way a genuine `stopped` event routed through
+   * routeFromDaemon would — a crashed daemon is exactly the kind of unexpected stop worth
+   * notifying about. Runs `graceMs` after the daemon's last connection closes; cancelled by a
+   * reconnect within that window (see `register`).
    */
   private async stopDaemonSessions(deviceId: string, userId: string): Promise<void> {
     try {
@@ -136,6 +152,7 @@ export class ConnectionHub {
           userId,
           message: { kind: 'event', sessionId: session.id, seq: stored.seq, event },
         } satisfies PubSubEnvelope);
+        await this.notifyPush(userId, session.id, event.type);
       }
     } catch {
       // Best-effort cleanup running detached from any request/connection — a store or pubsub
@@ -184,6 +201,8 @@ export class ConnectionHub {
       userId: connection.userId,
       message: { kind: 'event', sessionId, seq: stored.seq, event },
     } satisfies PubSubEnvelope);
+
+    await this.notifyPush(connection.userId, sessionId, event.type);
   }
 
   async routeFromBrowser(connection: Connection, sessionId: string, command: Command): Promise<void> {
@@ -202,6 +221,44 @@ export class ConnectionHub {
       targetDeviceId: session.daemonDeviceId,
       message: { kind: 'command', sessionId, command },
     } satisfies PubSubEnvelope);
+  }
+
+  /**
+   * Sends a push notification to every one of `userId`'s browser devices that has a stored
+   * push subscription, for a qualifying event type (see NOTIFICATION_TITLE_BY_EVENT_TYPE).
+   * Deliberately called from routeFromDaemon and stopDaemonSessions (each runs once per event,
+   * on whichever relay instance actually processed it) rather than from dispatchLocal (runs
+   * once per relay instance subscribed to the pubsub channel) — sending from dispatchLocal
+   * would fire a duplicate push per relay instance in a horizontally-scaled deployment. Every
+   * failure mode here — no matching title, no session, an individual device's send failing, a
+   * store failure — is swallowed: push delivery is best-effort and must never affect event
+   * routing or crash the process.
+   */
+  private async notifyPush(userId: string, sessionId: string, eventType: SessionEvent['type']): Promise<void> {
+    if (!this.pushSender) return;
+    const title = NOTIFICATION_TITLE_BY_EVENT_TYPE[eventType];
+    if (!title) return;
+    try {
+      const session = await this.store.getSession(sessionId);
+      if (!session) return;
+      const devices = await this.store.getDevicesForUser(userId);
+      const targets = devices.filter((d) => d.type === 'browser' && d.pushSubscription);
+      const payload: PushPayload = { title, body: session.projectPath, url: `/sessions/${sessionId}` };
+      await Promise.all(
+        targets.map(async (device) => {
+          try {
+            const result = await this.pushSender!.send(device.pushSubscription!, payload);
+            if (result === 'gone') {
+              await this.store.setPushSubscription(device.id, undefined);
+            }
+          } catch {
+            // A single device's push failure must not affect other devices or the caller.
+          }
+        })
+      );
+    } catch {
+      // Push notification delivery is best-effort and must never affect event routing.
+    }
   }
 
   private dispatchLocal(envelope: PubSubEnvelope): void {
