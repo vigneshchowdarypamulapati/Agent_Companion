@@ -147,6 +147,22 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
       expect(sinceFirst[0].seq).toBe(second.seq);
     });
 
+    it('getSessionEvents returns events in ascending seq order', async () => {
+      const store = await makeStore();
+      for (let i = 0; i < 10; i++) {
+        await store.appendSessionEvent('sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: i });
+      }
+      const events = await store.getSessionEvents('sess-1');
+      const seqs = events.map((e) => e.seq);
+      expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+    });
+
+    it('getSessionEvents returns an empty array for a NaN sinceSeq', async () => {
+      const store = await makeStore();
+      await store.appendSessionEvent('sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 1 });
+      expect(await store.getSessionEvents('sess-1', NaN)).toEqual([]);
+    });
+
     it('upsertSession and updateSessionStatus round-trip', async () => {
       const store = await makeStore();
       await store.upsertSession({

@@ -18,6 +18,15 @@ a real connection string:
 `process.loadEnvFile()` — no local database engine to install, and no
 extra flags needed for `npm start` or `npm test`.
 
+`npm test` truncates every table in whatever database `DATABASE_URL`
+points at before each test case — dev and test intentionally share one
+Neon project at this stage, so running the test suite wipes any paired
+devices/sessions you created locally. If that becomes disruptive, Neon's
+branching (free, instant, copy-on-write) can split dev and test into
+separate databases without any code change — just point
+`packages/relay/.env` at a different branch's connection string for one
+of them.
+
 Then:
 
     npm run build

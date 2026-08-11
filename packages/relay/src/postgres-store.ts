@@ -1,5 +1,5 @@
 import { randomInt } from 'node:crypto';
-import { and, eq, gt, gte } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, lt } from 'drizzle-orm';
 import type { PushSubscriptionPayload, SessionEvent, SessionStatus } from '@companion/protocol';
 import type { Device, DismissSessionResult, PairingCode, SessionRecord, Store, StoredSessionEvent, User } from './store.js';
 import type { Db } from './db/client.js';
@@ -64,6 +64,11 @@ export class PostgresStore implements Store {
   }
 
   async createPairingCode(userId: string): Promise<PairingCode> {
+    // Expired codes are never otherwise deleted; sweep them here so this
+    // table doesn't grow forever now that storage is durable across restarts
+    // (the old InMemoryStore leaked the same way, but a process restart used
+    // to clear it for free — that safety net is gone).
+    await this.db.delete(pairingCodes).where(lt(pairingCodes.expiresAt, this.now()));
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
     const [pairing] = await this.db
       .insert(pairingCodes)
@@ -116,20 +121,27 @@ export class PostgresStore implements Store {
   }
 
   async appendSessionEvent(sessionId: string, event: SessionEvent): Promise<StoredSessionEvent> {
-    const [stored] = await this.db
-      .insert(sessionEvents)
-      .values({ sessionId, event, createdAt: this.now() })
-      .returning();
-    // Keeps the session's "most recently active" marker in sync with the
-    // event stream, so list-view sorting never needs to fetch that stream.
-    await this.db.update(sessions).set({ lastEventAt: event.at }).where(eq(sessions.id, sessionId));
-    return stored;
+    return this.db.transaction(async (tx) => {
+      const [stored] = await tx
+        .insert(sessionEvents)
+        .values({ sessionId, event, createdAt: this.now() })
+        .returning();
+      // Keeps the session's "most recently active" marker in sync with the
+      // event stream, so list-view sorting never needs to fetch that stream.
+      // Both writes commit or roll back together, so a crash between them
+      // can't leave a stored event whose owning session's lastEventAt never
+      // advances.
+      await tx.update(sessions).set({ lastEventAt: event.at }).where(eq(sessions.id, sessionId));
+      return stored;
+    });
   }
 
   async getSessionEvents(sessionId: string, sinceSeq = 0): Promise<StoredSessionEvent[]> {
+    if (Number.isNaN(sinceSeq)) return [];
     return this.db
       .select()
       .from(sessionEvents)
-      .where(and(eq(sessionEvents.sessionId, sessionId), gt(sessionEvents.seq, sinceSeq)));
+      .where(and(eq(sessionEvents.sessionId, sessionId), gt(sessionEvents.seq, sinceSeq)))
+      .orderBy(asc(sessionEvents.seq));
   }
 }

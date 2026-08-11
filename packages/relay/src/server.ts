@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { RelayMessage, RedeemPairingRequest, PushSubscriptionPayload } from '@companion/protocol';
+import { ZodError } from 'zod';
 import type { Device, Store } from './store.js';
 import type { PubSub } from './pubsub.js';
 import { PairingService } from './pairing.js';
@@ -206,8 +207,17 @@ export async function createRelayServer({ store, pubsub, pushSender, vapidPublic
   );
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(400).json({ error: message });
+    if (err instanceof ZodError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    // Anything else (a Postgres/Drizzle error, a network failure, etc.) is an
+    // unexpected server-side failure, not a client mistake. The previous
+    // blanket 400 both misclassified real outages as client errors and leaked
+    // internal detail (SQL text, bound parameter values like a device's token
+    // hash) into the response body — log the detail server-side only.
+    console.error('Unhandled relay error:', err);
+    res.status(500).json({ error: 'Internal server error' });
   });
 
   const httpServer = createServer(app);

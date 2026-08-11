@@ -45,7 +45,7 @@ if (!pushSender) {
   );
 }
 
-const { db } = createDbClient(DATABASE_URL);
+const { pool, db } = createDbClient(DATABASE_URL);
 await runMigrations(db);
 
 const store = new PostgresStore(db);
@@ -60,3 +60,13 @@ const httpServer = await createRelayServer({
 httpServer.listen(PORT, HOST, () => {
   console.log(`Companion relay listening on http://${HOST}:${PORT}`);
 });
+
+async function shutdown(signal: string): Promise<void> {
+  console.log(`Received ${signal}, shutting down...`);
+  await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  await pool.end();
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
