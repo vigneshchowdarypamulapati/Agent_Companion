@@ -6,8 +6,27 @@ over WebSocket, persisting both durably.
 
 ## Run
 
+Requires a Postgres database (Neon in this project) — set `DATABASE_URL`
+to a connection string before starting; the relay fails fast at startup if
+it's unset. For local development, copy the example env file and fill in
+a real connection string:
+
+    cp packages/relay/.env.example packages/relay/.env
+
+`main.ts` and the test suite (`vitest.config.ts`) both load
+`packages/relay/.env` automatically at startup via Node's built-in
+`process.loadEnvFile()` — no local database engine to install, and no
+extra flags needed for `npm start` or `npm test`.
+
+Then:
+
     npm run build
     npm start
+
+Migrations (`packages/relay/drizzle/`) run automatically at startup before
+the HTTP server starts listening — there's no separate migrate command to
+run by hand. When `src/db/schema.ts` changes, generate a new migration with
+`npm run db:generate -w @companion/relay` and commit the resulting files.
 
 Set `COMPANION_RELAY_PORT` (default `8787`) and `COMPANION_RELAY_HOST`
 (default `0.0.0.0` — unlike the daemon, this server is meant to be
@@ -85,11 +104,11 @@ a `{kind:'error', message}` diagnostic frame — this is not part of the
 
 ## Current scope (v1)
 
-- Storage (`Store`) and cross-instance routing (`PubSub`) are in-memory —
-  state does not persist across restarts and this process cannot yet be
-  horizontally scaled. Both are defined as port interfaces
-  (`store.ts`, `pubsub.ts`) specifically so real Postgres/Redis-backed
-  implementations can be swapped in later without touching `hub.ts`,
+- Storage (`Store`) is backed by Postgres (`PostgresStore`) and durable
+  across restarts. Cross-instance routing (`PubSub`) is still in-memory,
+  so this process cannot yet be horizontally scaled — both are defined as
+  port interfaces (`store.ts`, `pubsub.ts`) specifically so a real
+  Redis-backed `PubSub` can be swapped in later without touching `hub.ts`,
   `pairing.ts`, or `server.ts`.
 - A single seeded default user; pairing-code requests are unauthenticated
   (bootstraps the first device). Public multi-user signup is future work.
