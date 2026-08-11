@@ -65,9 +65,32 @@ export const users = pgTable('users', {
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
 });
 
+// No FK from userId/daemonDeviceId/sessionId back to their owning tables,
+// anywhere in this schema — not just on daemonDeviceId. Two independent
+// reasons, both real:
+//   1. daemonDeviceId specifically: InMemoryStore's deleteDevice()
+//      intentionally leaves sessions pointing at a deleted device's id
+//      (the disconnect-grace path in ConnectionHub is what marks those
+//      sessions stopped, not device deletion) — a real FK would turn that
+//      into a delete failure instead.
+//   2. userId and sessionId generally: the Store interface only supports
+//      one seeded user in this phase (getOrCreateDefaultUser() is a
+//      singleton, there is no way to create a second real user yet), and
+//      the existing contract-test suite exercises devices/sessions/events
+//      created with arbitrary opaque id strings that were never inserted
+//      as real rows (e.g. getDevicesForUser's own test creates devices
+//      under 'user-1'/'user-2' directly). InMemoryStore never validated
+//      these references either, so real FK enforcement now would silently
+//      break behavioral parity with the exact test suite this plan is
+//      required to keep passing unchanged. Real per-user referential
+//      integrity is a multi-user-phase concern, once a real
+//      user-creation API exists to make it meaningful.
+// Indexes (not constraints) are still added on the columns actually
+// queried by userId, since those speed up real lookups without asserting
+// anything about what rows exist.
 export const devices = pgTable('devices', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull(),
   type: text('type', { enum: ['daemon', 'browser'] }).notNull(),
   name: text('name').notNull(),
   tokenHash: text('token_hash').notNull().unique(),
@@ -79,19 +102,14 @@ export const devices = pgTable('devices', {
 
 export const pairingCodes = pgTable('pairing_codes', {
   code: text('code').primaryKey(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull(),
   expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
   consumed: boolean('consumed').notNull().default(false),
 });
 
-// No FK on daemonDeviceId: InMemoryStore's deleteDevice() intentionally
-// leaves sessions pointing at a deleted device's id (the disconnect-grace
-// path in ConnectionHub is what marks those sessions stopped, not device
-// deletion) — a real FK constraint would turn that into a delete failure
-// instead. Preserving that behavior exactly is the point of this plan.
 export const sessions = pgTable('sessions', {
   id: text('id').primaryKey(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull(),
   daemonDeviceId: uuid('daemon_device_id').notNull(),
   projectPath: text('project_path').notNull(),
   status: text('status', { enum: ['running', 'waiting_permission', 'paused', 'stopped'] }).notNull(),
@@ -107,7 +125,7 @@ export const sessions = pgTable('sessions', {
 // session — not a per-session counter.
 export const sessionEvents = pgTable('session_events', {
   seq: bigserial('seq', { mode: 'number' }).primaryKey(),
-  sessionId: text('session_id').notNull().references(() => sessions.id, { onDelete: 'cascade' }),
+  sessionId: text('session_id').notNull(),
   event: jsonb('event').notNull(),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
 }, (table) => ([
@@ -201,9 +219,16 @@ environment, run migrations once before the first `main.ts` start.
   (epoch-ms) at every `Store` method boundary, not `Date` objects or
   strings — this must hold at both the schema layer (`{ mode: 'number' }`)
   and every query result.
-- No FK constraint on `sessions.daemonDeviceId` — must not turn
-  `deleteDevice()` into an operation that can fail because a session
-  references that device.
+- No FK constraints on `devices.userId`, `pairingCodes.userId`,
+  `sessions.userId`, `sessions.daemonDeviceId`, or `sessionEvents.sessionId`
+  — none of these may reject an insert/delete because a referenced row
+  doesn't exist; `users.email` and `devices.tokenHash` stay UNIQUE (real
+  invariants the application logic actually relies on).
+- The full existing `in-memory-store.test.ts` test suite (all 20 cases,
+  unmodified) must pass verbatim against `PostgresStore` via the shared
+  contract-test function — if any case needs a code change to pass, that's
+  a signal the implementation deviated from `InMemoryStore`'s behavior,
+  not that the test was wrong.
 - `DATABASE_URL` is required in every environment the relay actually runs
   in (`main.ts` fails fast if unset); `InMemoryStore` is kept only as a
   test double for non-storage tests, never as a runtime fallback.
