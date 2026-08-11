@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace `InMemoryStore` with a `PostgresStore` that implements the exact same `Store` interface, backed by a real, durable Postgres database (Neon in production, Docker locally), so a relay restart no longer wipes every paired device and session.
+**Goal:** Replace `InMemoryStore` with a `PostgresStore` that implements the exact same `Store` interface, backed by a real, durable Neon Postgres database (the same project for local dev, tests, and production at this stage), so a relay restart no longer wipes every paired device and session.
 
 **Architecture:** Drizzle ORM (`drizzle-orm` + `drizzle-kit`) over the standard `pg` node-postgres driver, one table per `Store` record type. `PostgresStore` is a drop-in swap behind the existing `Store` port — `hub.ts`/`pairing.ts`/`server.ts` don't change at all, only how `main.ts` constructs the store. `InMemoryStore` stays in the codebase as a fast test double for non-storage tests; it is never used by the running relay in any environment.
 
-**Tech Stack:** `drizzle-orm@0.45.2`, `drizzle-kit@0.31.10`, `pg@8.23.0`, `@types/pg@8.21.0`, Postgres 17 (Docker locally, Neon in the deployed environment).
+**Tech Stack:** `drizzle-orm@0.45.2`, `drizzle-kit@0.31.10`, `pg@8.23.0`, `@types/pg@8.21.0`, Neon Postgres (no local database engine — `DATABASE_URL` points at the real Neon project everywhere, including tests).
 
 ## Global Constraints
 
@@ -16,23 +16,25 @@
 - No FK constraints on `devices.userId`, `pairingCodes.userId`, `sessions.userId`, `sessions.daemonDeviceId`, or `sessionEvents.sessionId` — none of these may reject an insert/delete because a referenced row doesn't exist. `users.email` and `devices.tokenHash` stay UNIQUE.
 - The full existing `in-memory-store.test.ts` suite (all 20 cases, unmodified in behavior) must pass verbatim against `PostgresStore` via a shared contract-test function — if a case needs a behavior change to pass, that's a signal of an implementation deviation, not a wrong test.
 - `DATABASE_URL` is required in every environment the relay actually runs in — `main.ts` throws and fails to start if it's unset. `InMemoryStore` is kept only as a test double for non-storage tests (`hub.test.ts`, `server.test.ts`, `pairing`-related tests), never as a runtime fallback.
-- Real Postgres (via Docker Compose locally) backs `npm test`, not just production — `PostgresStore`'s own tests run against a real Postgres engine, not a mock.
+- Real Postgres (the actual Neon project, via `DATABASE_URL` — no local database engine, no Docker) backs `npm test`, not just production — `PostgresStore`'s own tests run against a real Postgres engine, not a mock.
+- `packages/relay/.env` (gitignored, already created with the real Neon `DATABASE_URL`) must never be read into a commit, a report file, or any subagent's returned text — treat its contents as a live credential.
 
 ---
 
-### Task 1: Database schema, migrations, and local Postgres
+### Task 1: Database schema, migrations, and Neon connection
 
 **Files:**
 - Modify: `packages/relay/package.json`
+- Modify: `packages/relay/vitest.config.ts`
 - Create: `packages/relay/src/db/schema.ts`
 - Create: `packages/relay/src/db/client.ts`
 - Create: `packages/relay/src/db/migrate.ts`
 - Create: `packages/relay/src/db/schema.test.ts`
 - Create: `packages/relay/drizzle.config.ts`
-- Create: `docker-compose.yml` (repo root)
 - Create: `packages/relay/.env.example`
-- Modify: `.gitignore`
 - Generate: `packages/relay/drizzle/*.sql` and `packages/relay/drizzle/meta/*` (via `drizzle-kit generate`, not hand-written)
+
+**Already done, before this task starts:** `packages/relay/.env` exists (gitignored) with a real Neon pooled connection string in `DATABASE_URL`, and `.gitignore` already has a `.env` line. Do not create, overwrite, or print the contents of `packages/relay/.env` — read `DATABASE_URL` from it the normal way (via `process.env`, loaded through the commands below), never by opening the file.
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks (this is the first task).
@@ -80,52 +82,15 @@ In `packages/relay/package.json`, change `dependencies` and `devDependencies` to
 
 Run from the repo root (`D:\Companion`): `npm install`
 
-- [ ] **Step 2: Add the local Postgres to Docker Compose**
+- [ ] **Step 2: Add an `.env.example` template**
 
-Create `docker-compose.yml` at the repo root (`D:\Companion\docker-compose.yml`):
-
-```yaml
-services:
-  postgres:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_USER: companion
-      POSTGRES_PASSWORD: companion
-      POSTGRES_DB: companion
-    ports:
-      # 5433, not the default 5432, so this doesn't collide with any other
-      # Postgres already running on the host machine.
-      - '5433:5432'
-    volumes:
-      - companion-postgres-data:/var/lib/postgresql/data
-
-volumes:
-  companion-postgres-data:
-```
-
-Start it: `docker compose up -d`
-
-- [ ] **Step 3: Add local env config**
-
-Create `packages/relay/.env.example`:
+Create `packages/relay/.env.example` — a template for anyone else setting this project up, showing the expected shape without any real credential (the real one already lives in the gitignored `packages/relay/.env`, set up separately):
 
 ```
-DATABASE_URL=postgres://companion:companion@localhost:5433/companion
+DATABASE_URL=postgresql://<user>:<password>@<host>-pooler.<region>.aws.neon.tech/<database>?sslmode=require&channel_binding=require
 ```
 
-Copy it to a real (gitignored) `.env` for local use:
-
-```bash
-cp packages/relay/.env.example packages/relay/.env
-```
-
-In `.gitignore`, add a line so `.env` files are never committed (append to the existing file, which currently reads `node_modules/`, `dist/`, `*.log`, `*.tsbuildinfo`):
-
-```
-.env
-```
-
-- [ ] **Step 4: Write the schema**
+- [ ] **Step 3: Write the schema**
 
 Create `packages/relay/src/db/schema.ts`:
 
@@ -204,7 +169,7 @@ export const sessionEvents = pgTable('session_events', {
 ]));
 ```
 
-- [ ] **Step 5: Write the DB client and migration helpers**
+- [ ] **Step 4: Write the DB client and migration helpers**
 
 Create `packages/relay/src/db/client.ts`:
 
@@ -239,24 +204,59 @@ export async function runMigrations(db: Db): Promise<void> {
 }
 ```
 
-- [ ] **Step 6: Write the Drizzle Kit config**
+- [ ] **Step 5: Write the Drizzle Kit config, and load `.env` for tests**
 
 Create `packages/relay/drizzle.config.ts`:
 
 ```ts
 import { defineConfig } from 'drizzle-kit';
 
+// .env isn't checked in, so drizzle-kit CLI invocations (which don't go
+// through vitest.config.ts's own loadEnvFile call) need to load it here
+// too. Missing .env is fine — real deployments set DATABASE_URL directly.
+try {
+  process.loadEnvFile('.env');
+} catch {
+  // no .env file present — fine in production
+}
+
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL is required to run drizzle-kit — see packages/relay/.env.example');
+}
+
 export default defineConfig({
   schema: './src/db/schema.ts',
   out: './drizzle',
   dialect: 'postgresql',
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? 'postgres://companion:companion@localhost:5433/companion',
+    url: process.env.DATABASE_URL,
   },
 });
 ```
 
-- [ ] **Step 7: Write the failing schema/migration smoke test**
+Also update `packages/relay/vitest.config.ts` (currently just `defineConfig({ test: { exclude: [...] } })`) to load the same `.env` file before any test file runs, so every `npm test` command below — and every later `npm test -w @companion/relay -- <pattern>` command in this plan — picks up `DATABASE_URL` automatically with no manual env setup:
+
+```ts
+import { defineConfig } from 'vitest/config';
+
+// Tests need DATABASE_URL (the real Neon project) but .env isn't checked
+// in. Loading it here means every `npm test` invocation picks it up
+// automatically. Missing .env would just mean tests that need
+// DATABASE_URL fail with a clear connection error — not silently skipped.
+try {
+  process.loadEnvFile('.env');
+} catch {
+  // no .env file present — fine in CI environments that set env vars directly
+}
+
+export default defineConfig({
+  test: {
+    exclude: ['**/node_modules/**', '**/dist/**'],
+  },
+});
+```
+
+- [ ] **Step 6: Write the failing schema/migration smoke test**
 
 Create `packages/relay/src/db/schema.test.ts`:
 
@@ -268,7 +268,13 @@ import type { Pool } from 'pg';
 import { runMigrations } from './migrate.js';
 import { users, devices, pairingCodes, sessions, sessionEvents } from './schema.js';
 
-const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://companion:companion@localhost:5433/companion';
+// vitest.config.ts (Step 5) already loads packages/relay/.env, so
+// DATABASE_URL is always set here in practice — no local fallback needed
+// or wanted, since there's no local database to fall back to.
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL is not set — check packages/relay/.env');
+}
+const DATABASE_URL = process.env.DATABASE_URL;
 
 describe('schema and migrations', () => {
   let db: Db;
@@ -329,33 +335,27 @@ describe('schema and migrations', () => {
 });
 ```
 
-- [ ] **Step 8: Run the test to verify it fails**
-
-Ensure Docker Postgres is running (`docker compose up -d` from the repo root), then:
+- [ ] **Step 7: Run the test to verify it fails**
 
 Run: `npm test -w @companion/relay -- schema`
-Expected: FAIL — `packages/relay/drizzle/` doesn't exist yet, so `runMigrations` has no migration files to apply and the tables don't exist.
+Expected: FAIL — `packages/relay/drizzle/` doesn't exist yet, so `runMigrations` has no migration files to apply and the tables don't exist. (`vitest.config.ts`, from Step 5, already loads `packages/relay/.env`'s `DATABASE_URL` automatically — no manual env setup needed for this or any later `npm test`/`npm run build` command in this plan.)
 
-- [ ] **Step 9: Generate the migration**
+- [ ] **Step 8: Generate the migration**
 
-From `packages/relay`:
+From `packages/relay`: `npm run db:generate`
 
-```bash
-npx drizzle-kit generate
-```
+This reads `src/db/schema.ts` and writes SQL migration files plus a metadata journal under `packages/relay/drizzle/`. Open the generated `.sql` file and confirm it contains `CREATE TABLE` statements for `users`, `devices`, `pairing_codes`, `sessions`, and `session_events`, matching the columns defined in Step 3 — if any table or column is missing, `schema.ts` has a mistake to fix before continuing.
 
-This reads `src/db/schema.ts` and writes SQL migration files plus a metadata journal under `packages/relay/drizzle/`. Open the generated `.sql` file and confirm it contains `CREATE TABLE` statements for `users`, `devices`, `pairing_codes`, `sessions`, and `session_events`, matching the columns defined in Step 4 — if any table or column is missing, `schema.ts` has a mistake to fix before continuing.
-
-- [ ] **Step 10: Run the test to verify it passes**
+- [ ] **Step 9: Run the test to verify it passes**
 
 Run: `npm test -w @companion/relay -- schema`
 Expected: PASS
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add packages/relay/package.json package-lock.json packages/relay/src/db packages/relay/drizzle.config.ts packages/relay/drizzle packages/relay/.env.example docker-compose.yml .gitignore
-git commit -m "feat(relay): add Postgres schema, migrations, and local Docker Compose setup"
+git add packages/relay/package.json package-lock.json packages/relay/vitest.config.ts packages/relay/src/db packages/relay/drizzle.config.ts packages/relay/drizzle packages/relay/.env.example
+git commit -m "feat(relay): add Postgres schema, migrations, and Neon connection"
 ```
 
 ---
@@ -712,7 +712,13 @@ import { runMigrations } from './db/migrate.js';
 import { PostgresStore } from './postgres-store.js';
 import { runStoreContractTests } from './store-contract-tests.js';
 
-const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://companion:companion@localhost:5433/companion';
+// vitest.config.ts (Step 5) already loads packages/relay/.env, so
+// DATABASE_URL is always set here in practice — no local fallback needed
+// or wanted, since there's no local database to fall back to.
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL is not set — check packages/relay/.env');
+}
+const DATABASE_URL = process.env.DATABASE_URL;
 
 let db: Db;
 let pool: Pool;
@@ -734,8 +740,6 @@ runStoreContractTests('PostgresStore', (now) => new PostgresStore(db, now));
 ```
 
 - [ ] **Step 5: Run the test to verify it fails**
-
-Ensure Docker Postgres is running (`docker compose up -d` from the repo root), then:
 
 Run: `npm test -w @companion/relay -- postgres-store`
 Expected: FAIL — `./postgres-store.js` doesn't exist yet.
@@ -884,15 +888,13 @@ export class PostgresStore implements Store {
 
 - [ ] **Step 7: Run the test to verify it passes**
 
-Ensure Docker Postgres is running, then:
-
 Run: `npm test -w @companion/relay -- postgres-store`
 Expected: PASS (all 20 cases, the same ones `InMemoryStore` passes)
 
 - [ ] **Step 8: Run the full relay suite**
 
 Run: `npm test -w @companion/relay`
-Expected: PASS across every test file in the package (this now requires Docker Postgres to be running — `hub.test.ts`/`server.test.ts`/etc. still use `InMemoryStore` directly and are unaffected, but `schema.test.ts` and `postgres-store.test.ts` need the database up).
+Expected: PASS across every test file in the package (this now requires the real Neon `DATABASE_URL` from `.env` to be reachable — `hub.test.ts`/`server.test.ts`/etc. still use `InMemoryStore` directly and are unaffected, but `schema.test.ts` and `postgres-store.test.ts` need the database).
 
 - [ ] **Step 9: Commit**
 
@@ -925,6 +927,19 @@ import { createDbClient } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { PostgresStore } from './postgres-store.js';
 
+// .env isn't checked in (it holds a real Neon connection string). Loading
+// it here means `node dist/main.js` and `npm start` both just work locally
+// without extra flags; a missing .env is fine — real deployments set
+// DATABASE_URL directly in the environment instead. None of the imports
+// above read env vars at their own module-load time, so it doesn't matter
+// that this runs after them — every env-dependent read in this file
+// happens below this line anyway.
+try {
+  process.loadEnvFile('.env');
+} catch {
+  // no .env file present — fine in production
+}
+
 const PORT = Number(process.env.COMPANION_RELAY_PORT ?? 8787);
 const HOST = process.env.COMPANION_RELAY_HOST ?? '0.0.0.0';
 
@@ -932,7 +947,7 @@ const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
   throw new Error(
     'DATABASE_URL is required — set it to a Postgres connection string. ' +
-      'See packages/relay/.env.example for local development (docker compose up -d).'
+      'See packages/relay/.env.example for local development.'
   );
 }
 
@@ -971,7 +986,7 @@ httpServer.listen(PORT, HOST, () => {
 
 - [ ] **Step 2: Build and smoke-test the relay against the real Postgres**
 
-Ensure Docker Postgres is running (`docker compose up -d` from the repo root), and that `packages/relay/.env` exists (from Task 1 Step 3).
+`packages/relay/.env` already exists with the real Neon `DATABASE_URL` (set up before Task 1 started).
 
 Run: `npm run build -w @companion/relay`
 Expected: PASS with no type errors.
@@ -980,7 +995,7 @@ Start the relay and confirm it boots against Postgres instead of crashing or fal
 
 ```bash
 cd packages/relay
-node --env-file=.env dist/main.js
+node dist/main.js
 ```
 
 Expected console output: `Companion relay listening on http://0.0.0.0:8787` (plus the "Push notifications are disabled" line, since no VAPID env vars are set locally). In a second terminal, confirm the server is actually live and backed by the real store:
@@ -991,13 +1006,15 @@ curl -i http://localhost:8787/push/vapid-public-key
 
 Expected: `HTTP/1.1 404 Not Found` with `{"error":"Push notifications are not configured on this relay"}` (proves the process is up and routing through `PostgresStore`-backed `createRelayServer`, not crashing on startup). Stop the relay (Ctrl+C).
 
-Now confirm the `DATABASE_URL`-required guard actually works:
+Now confirm the `DATABASE_URL`-required guard actually works — temporarily move `.env` aside so nothing supplies `DATABASE_URL`, since `main.ts` otherwise auto-loads it:
 
 ```bash
+mv .env .env.tmp
 node dist/main.js
+mv .env.tmp .env
 ```
 
-Expected: the process throws `Error: DATABASE_URL is required — ...` and exits immediately, without attempting to listen on any port.
+Expected: the process throws `Error: DATABASE_URL is required — ...` and exits immediately, without attempting to listen on any port. Confirm the final `mv` restored `.env` before moving on — later steps and Task 3's own README/build verification need it back in place.
 
 - [ ] **Step 3: Update the relay README**
 
@@ -1025,13 +1042,17 @@ Replace with:
 ```markdown
 ## Run
 
-Requires a Postgres database — set `DATABASE_URL` to a connection string
-before starting; the relay fails fast at startup if it's unset. For local
-development, a Postgres instance is defined in the `docker-compose.yml` at
-the repo root:
+Requires a Postgres database (Neon in this project) — set `DATABASE_URL`
+to a connection string before starting; the relay fails fast at startup if
+it's unset. For local development, copy the example env file and fill in
+a real connection string:
 
-    docker compose up -d
     cp packages/relay/.env.example packages/relay/.env
+
+`main.ts` and the test suite (`vitest.config.ts`) both load
+`packages/relay/.env` automatically at startup via Node's built-in
+`process.loadEnvFile()` — no local database engine to install, and no
+extra flags needed for `npm start` or `npm test`.
 
 Then:
 
@@ -1079,7 +1100,7 @@ Replace it with:
 - [ ] **Step 4: Run the full repo test suite and build**
 
 Run: `npm test` from the repo root (`D:\Companion`)
-Expected: PASS across all four packages (Docker Postgres must be running).
+Expected: PASS across all four packages (`packages/relay/.env`'s `DATABASE_URL` must be reachable).
 
 Run: `npm run build` from the repo root
 Expected: PASS with no type errors.
