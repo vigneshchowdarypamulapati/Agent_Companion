@@ -13,5 +13,13 @@ try {
 export default defineConfig({
   test: {
     exclude: ['**/node_modules/**', '**/dist/**'],
+    // schema.test.ts and postgres-store.test.ts both read/write the same
+    // shared live Neon database. Vitest runs test *files* in parallel by
+    // default, so without this, postgres-store.test.ts's beforeEach
+    // TRUNCATE can race with schema.test.ts's insert-then-read in another
+    // worker and wipe rows out from under it. Test files still run their
+    // own `it` blocks normally; this only serializes across files so the
+    // shared DB never sees concurrent writers.
+    fileParallelism: false,
   },
 });

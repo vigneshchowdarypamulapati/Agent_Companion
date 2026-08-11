@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { pgTable, uuid, text, bigint, bigserial, boolean, jsonb, index } from 'drizzle-orm/pg-core';
 import type { PushSubscriptionPayload, SessionEvent } from '@companion/protocol';
 
@@ -20,6 +21,16 @@ import type { PushSubscriptionPayload, SessionEvent } from '@companion/protocol'
 // Indexes (not constraints) are still added on the columns actually
 // queried by userId/sessionId, since those speed up real lookups without
 // asserting anything about what rows exist.
+//
+// For the same reason, userId/daemonDeviceId columns (and devices.id) are
+// `text`, not the native Postgres `uuid` type: the contract-test suite
+// supplies opaque non-UUID-format strings like 'user-1' and 'device-1' for
+// these fields directly, and a native `uuid` column rejects any value that
+// isn't valid UUID syntax at the SQL level — a parse error, not a "no rows
+// match" result — which breaks parity with InMemoryStore's plain-string
+// Map keys. devices.id still gets an actual UUID value by default via
+// $defaultFn, it's just stored/compared as text so lookups with arbitrary
+// strings behave like a normal miss instead of throwing.
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -28,8 +39,8 @@ export const users = pgTable('users', {
 });
 
 export const devices = pgTable('devices', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull(),
+  id: text('id').primaryKey().$defaultFn(() => randomUUID()),
+  userId: text('user_id').notNull(),
   type: text('type', { enum: ['daemon', 'browser'] }).notNull(),
   name: text('name').notNull(),
   tokenHash: text('token_hash').notNull().unique(),
@@ -41,15 +52,15 @@ export const devices = pgTable('devices', {
 
 export const pairingCodes = pgTable('pairing_codes', {
   code: text('code').primaryKey(),
-  userId: uuid('user_id').notNull(),
+  userId: text('user_id').notNull(),
   expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
   consumed: boolean('consumed').notNull().default(false),
 });
 
 export const sessions = pgTable('sessions', {
   id: text('id').primaryKey(),
-  userId: uuid('user_id').notNull(),
-  daemonDeviceId: uuid('daemon_device_id').notNull(),
+  userId: text('user_id').notNull(),
+  daemonDeviceId: text('daemon_device_id').notNull(),
   projectPath: text('project_path').notNull(),
   status: text('status', { enum: ['running', 'waiting_permission', 'paused', 'stopped'] }).notNull(),
   startedAt: bigint('started_at', { mode: 'number' }).notNull(),
