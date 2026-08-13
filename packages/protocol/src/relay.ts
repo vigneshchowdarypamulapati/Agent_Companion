@@ -17,9 +17,22 @@ export const RelayMessage = z.discriminatedUnion('kind', [
 ]);
 export type RelayMessage = z.infer<typeof RelayMessage>;
 
-export const RedeemPairingRequest = z.object({
-  code: z.string(),
-  deviceType: z.enum(['daemon', 'browser']),
+export const RequestPairingCodeRequest = z.object({
   deviceName: z.string(),
 });
-export type RedeemPairingRequest = z.infer<typeof RedeemPairingRequest>;
+export type RequestPairingCodeRequest = z.infer<typeof RequestPairingCodeRequest>;
+
+export const ClaimPairingRequest = z.object({
+  code: z.string(),
+});
+export type ClaimPairingRequest = z.infer<typeof ClaimPairingRequest>;
+
+export const PollPairingRequest = z.object({
+  deviceCode: z.string(),
+});
+export type PollPairingRequest = z.infer<typeof PollPairingRequest>;
+
+export const RegisterBrowserRequest = z.object({
+  deviceName: z.string(),
+});
+export type RegisterBrowserRequest = z.infer<typeof RegisterBrowserRequest>;
