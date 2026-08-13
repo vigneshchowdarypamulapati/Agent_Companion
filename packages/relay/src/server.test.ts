@@ -146,6 +146,106 @@ describe('relay server', () => {
     expect(res.status).toBe(400);
   });
 
+  it('returns 404 when claiming an unknown code', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const res = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({ code: '000000' });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 410 when claiming an expired code', async () => {
+    let now = 1_000_000;
+    const store = new InMemoryStore(() => now);
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const codeRes = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'laptop' });
+
+    now += 6 * 60 * 1000; // 6 minutes later, past the 5-minute TTL
+
+    const claimRes = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({ code: codeRes.body.code });
+
+    expect(claimRes.status).toBe(410);
+    expect(claimRes.body).toEqual({ error: 'Pairing code expired' });
+  });
+
+  it('returns 409 with already_claimed when claiming a code a second time', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const codeRes = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'laptop' });
+    await request(httpServer).post('/pairing/claim').set('Authorization', `Bearer ${browserToken}`).send({ code: codeRes.body.code });
+
+    const secondClaim = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({ code: codeRes.body.code });
+
+    expect(secondClaim.status).toBe(409);
+    expect(secondClaim.body).toEqual({ error: 'Pairing code already claimed' });
+  });
+
+  it('returns 409 with daemon_exists when the account already has a daemon device', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    await pairDaemon(httpServer, browserToken, 'laptop');
+
+    const codeRes = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'second-laptop' });
+    const claimRes = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({ code: codeRes.body.code });
+
+    expect(claimRes.status).toBe(409);
+    expect(claimRes.body).toEqual({ error: 'Account already has a paired daemon — unpair it first' });
+  });
+
+  it('returns 401 for POST /devices/register-browser without an Authorization header', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer).post('/devices/register-browser').send({ deviceName: 'phone' });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 for POST /devices/register-browser with an invalid Clerk token', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer)
+      .post('/devices/register-browser')
+      .set('Authorization', 'Bearer not-a-real-clerk-token')
+      .send({ deviceName: 'phone' });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 201 with a token and deviceId for a valid Clerk registration', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer)
+      .post('/devices/register-browser')
+      .set('Authorization', `Bearer ${FAKE_CLERK_TOKEN}`)
+      .send({ deviceName: 'phone' });
+
+    expect(res.status).toBe(201);
+    expect(typeof res.body.token).toBe('string');
+    expect(typeof res.body.deviceId).toBe('string');
+  });
+
   it('returns 404 for an unknown session id when authenticated', async () => {
     httpServer = await createRelayServer({
       store: new InMemoryStore(),
