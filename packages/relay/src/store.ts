@@ -61,7 +61,14 @@ export interface Store {
   createPairingCode(deviceName: string): Promise<PairingCode>;
   claimPairingCode(code: string, userId: string): Promise<'ok' | 'not_found' | 'expired' | 'already_claimed'>;
   getPairingCodeByDeviceCode(deviceCode: string): Promise<PairingCode | undefined>;
-  markPairingCodeRedeemed(deviceCode: string): Promise<void>;
+  /**
+   * Atomically flips `redeemed` false -> true and returns the updated row, but
+   * only if the row exists, has been claimed (`userId` set), and was not
+   * already redeemed. Returns `undefined` otherwise, which is how a caller
+   * that lost a race to a concurrent redemption finds out — this is the single
+   * point that makes a pairing code redeemable exactly once.
+   */
+  redeemPairingCode(deviceCode: string): Promise<PairingCode | undefined>;
   upsertSession(session: SessionRecord): Promise<void>;
   updateSessionStatus(sessionId: string, status: SessionStatus): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;

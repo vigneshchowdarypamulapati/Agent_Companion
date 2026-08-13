@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "devices_one_daemon_per_user" ON "devices" USING btree ("user_id") WHERE "devices"."type" = 'daemon';

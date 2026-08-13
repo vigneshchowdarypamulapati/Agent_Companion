@@ -155,19 +155,42 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
       expect(found?.userId).toBe('user-1');
     });
 
-    it('markPairingCodeRedeemed sets redeemed to true', async () => {
+    it('redeemPairingCode sets redeemed to true and returns the claimed row', async () => {
       const store = await makeStore();
       const pairing = await store.createPairingCode('my-laptop');
+      await store.claimPairingCode(pairing.code, 'user-1');
 
-      await store.markPairingCodeRedeemed(pairing.deviceCode);
+      const redeemed = await store.redeemPairingCode(pairing.deviceCode);
 
+      expect(redeemed?.code).toBe(pairing.code);
+      expect(redeemed?.userId).toBe('user-1');
+      expect(redeemed?.deviceName).toBe('my-laptop');
+      expect(redeemed?.redeemed).toBe(true);
       const found = await store.getPairingCodeByDeviceCode(pairing.deviceCode);
       expect(found?.redeemed).toBe(true);
     });
 
-    it('markPairingCodeRedeemed is a no-op for an unknown device code', async () => {
+    it('redeemPairingCode returns undefined for an unknown device code', async () => {
       const store = await makeStore();
-      await expect(store.markPairingCodeRedeemed('does-not-exist')).resolves.toBeUndefined();
+      expect(await store.redeemPairingCode('does-not-exist')).toBeUndefined();
+    });
+
+    it('redeemPairingCode returns undefined for a code that has not been claimed yet', async () => {
+      const store = await makeStore();
+      const pairing = await store.createPairingCode('my-laptop');
+
+      expect(await store.redeemPairingCode(pairing.deviceCode)).toBeUndefined();
+      const found = await store.getPairingCodeByDeviceCode(pairing.deviceCode);
+      expect(found?.redeemed).toBe(false);
+    });
+
+    it('redeemPairingCode returns undefined the second time — a code redeems exactly once', async () => {
+      const store = await makeStore();
+      const pairing = await store.createPairingCode('my-laptop');
+      await store.claimPairingCode(pairing.code, 'user-1');
+
+      expect(await store.redeemPairingCode(pairing.deviceCode)).toBeDefined();
+      expect(await store.redeemPairingCode(pairing.deviceCode)).toBeUndefined();
     });
 
     it('getDaemonDeviceForUser returns the daemon device for that user', async () => {

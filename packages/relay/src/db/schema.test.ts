@@ -76,4 +76,39 @@ describe('schema and migrations', () => {
     const found = await db.select().from(users).where(eq(users.id, user.id));
     expect(found).toHaveLength(1);
   });
+
+  // Backstop for the one-daemon-per-account rule (see devices in schema.ts).
+  // The service layer refuses long before this, so hitting it means a race got
+  // past both service-level checks — the point is that the database still says no.
+  it('rejects a second daemon device for the same user', async () => {
+    const userId = `user-daemon-uniq-${Date.now()}`;
+    await db
+      .insert(devices)
+      .values({ userId, type: 'daemon', name: 'laptop-a', tokenHash: `hash-a-${Date.now()}`, createdAt: 1 });
+
+    // Drizzle wraps the driver error in a generic "Failed query: …" message and
+    // keeps the real Postgres error (with its `constraint` field) as the cause,
+    // so the specific index has to be asserted through that.
+    const error = await db
+      .insert(devices)
+      .values({ userId, type: 'daemon', name: 'laptop-b', tokenHash: `hash-b-${Date.now()}`, createdAt: 1 })
+      .then(
+        () => undefined,
+        (err: unknown) => err
+      );
+    expect(error).toBeDefined();
+    expect((error as { cause?: { constraint?: string } }).cause?.constraint).toBe('devices_one_daemon_per_user');
+  });
+
+  it('still allows many browser devices for the same user', async () => {
+    const userId = `user-browsers-${Date.now()}`;
+    await db
+      .insert(devices)
+      .values({ userId, type: 'browser', name: 'phone', tokenHash: `hash-p-${Date.now()}`, createdAt: 1 });
+    await db
+      .insert(devices)
+      .values({ userId, type: 'browser', name: 'laptop', tokenHash: `hash-l-${Date.now()}`, createdAt: 1 });
+
+    expect(await db.select().from(devices).where(eq(devices.userId, userId))).toHaveLength(2);
+  });
 });

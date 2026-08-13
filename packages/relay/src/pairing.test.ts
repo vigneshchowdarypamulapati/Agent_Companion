@@ -57,12 +57,63 @@ describe('PairingService', () => {
   });
 
   it('polling again after completion returns expired, not a second token', async () => {
-    const pairing = new PairingService(new InMemoryStore());
+    const store = new InMemoryStore();
+    const pairing = new PairingService(store);
     const { code, deviceCode } = await pairing.requestPairingCode('my-laptop');
     await pairing.claimPairingCode(code, 'user-1');
     await pairing.pollPairingCode(deviceCode);
 
     expect(await pairing.pollPairingCode(deviceCode)).toEqual({ status: 'expired' });
+    // And exactly one daemon device was ever minted.
+    expect((await store.getDevicesForUser('user-1')).filter((d) => d.type === 'daemon')).toHaveLength(1);
+  });
+
+  it('a code that lost the redemption race mints nothing (redeemPairingCode returned undefined)', async () => {
+    const store = new InMemoryStore();
+    const pairing = new PairingService(store);
+    const { code, deviceCode } = await pairing.requestPairingCode('my-laptop');
+    await pairing.claimPairingCode(code, 'user-1');
+    // Simulate a concurrent poll winning the atomic redeem first.
+    expect(await store.redeemPairingCode(deviceCode)).toBeDefined();
+
+    expect(await pairing.pollPairingCode(deviceCode)).toEqual({ status: 'expired' });
+    expect(await store.getDaemonDeviceForUser('user-1')).toBeUndefined();
+  });
+
+  it('a second code claimed before the first daemon polls still never redeems, so only one daemon exists', async () => {
+    const store = new InMemoryStore();
+    const pairing = new PairingService(store);
+    const first = await pairing.requestPairingCode('laptop-a');
+    const second = await pairing.requestPairingCode('laptop-b');
+
+    // Both claims succeed: at claim time neither daemon device exists yet, which
+    // is exactly the race the poll-time re-check has to close.
+    expect(await pairing.claimPairingCode(first.code, 'user-1')).toBe('ok');
+    expect(await pairing.claimPairingCode(second.code, 'user-1')).toBe('ok');
+
+    expect((await pairing.pollPairingCode(first.deviceCode)).status).toBe('complete');
+    expect(await pairing.pollPairingCode(second.deviceCode)).toEqual({ status: 'expired' });
+
+    const daemons = (await store.getDevicesForUser('user-1')).filter((d) => d.type === 'daemon');
+    expect(daemons).toHaveLength(1);
+    expect(daemons[0].name).toBe('laptop-a');
+  });
+
+  it('claiming a second code after the first daemon completed also never redeems', async () => {
+    const store = new InMemoryStore();
+    const pairing = new PairingService(store);
+    const first = await pairing.requestPairingCode('laptop-a');
+    await pairing.claimPairingCode(first.code, 'user-1');
+    expect((await pairing.pollPairingCode(first.deviceCode)).status).toBe('complete');
+
+    // The claim itself is now rejected up front...
+    const second = await pairing.requestPairingCode('laptop-b');
+    expect(await pairing.claimPairingCode(second.code, 'user-1')).toBe('daemon_exists');
+    // ...and even if a claim had slipped through, the poll still refuses.
+    await store.claimPairingCode(second.code, 'user-1');
+    expect(await pairing.pollPairingCode(second.deviceCode)).toEqual({ status: 'expired' });
+
+    expect((await store.getDevicesForUser('user-1')).filter((d) => d.type === 'daemon')).toHaveLength(1);
   });
 
   it('registerBrowserDevice mints a browser device token for the given user', async () => {

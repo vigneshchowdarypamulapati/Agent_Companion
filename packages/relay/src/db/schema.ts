@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { pgTable, uuid, text, bigint, bigserial, boolean, jsonb, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { pgTable, uuid, text, bigint, bigserial, boolean, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import type { PushSubscriptionPayload, SessionEvent } from '@companion/protocol';
 
 // No FK from userId/daemonDeviceId/sessionId back to their owning tables,
@@ -9,15 +10,21 @@ import type { PushSubscriptionPayload, SessionEvent } from '@companion/protocol'
 //      (the disconnect-grace path in ConnectionHub is what marks those
 //      sessions stopped, not device deletion) — a real FK would turn that
 //      into a delete failure instead.
-//   2. userId and sessionId generally: the Store interface only supports
-//      one seeded user in this phase (getOrCreateDefaultUser() is a
-//      singleton — there is no way to create a second real user yet), and
-//      the existing contract-test suite exercises devices/sessions/events
-//      created with arbitrary opaque id strings that were never inserted
-//      as real rows first. InMemoryStore never validated these references
-//      either, so real FK enforcement now would break behavioral parity
-//      with the exact test suite this plan must keep passing unchanged.
-//      Real per-user referential integrity is a multi-user-phase concern.
+//   2. userId and sessionId generally: the store contract tests (and the
+//      InMemoryStore they also run against) create devices/sessions/events
+//      against arbitrary opaque id strings like 'user-1' and 'sess-1' that
+//      were never inserted into `users`/`sessions` as real rows first. Both
+//      Store implementations treat these ids as opaque scoping keys, never
+//      as validated references, so adding real FK enforcement to only the
+//      Postgres side would break that behavioral parity — the port's
+//      contract, which is what both implementations must satisfy
+//      identically, does not promise referential integrity. (This is a
+//      deliberate limitation of the port's contract, not a consequence of
+//      there being only one user: real multi-user support now exists via
+//      getOrCreateUserByClerkId.) The rows that matter for isolation are
+//      never orphaned in practice — a device is only ever created with the
+//      userId of a user the relay just resolved from Clerk, and a session
+//      only with the userId of an authenticated daemon's device.
 // Indexes (not constraints) are still added on the columns actually
 // queried by userId/sessionId, since those speed up real lookups without
 // asserting anything about what rows exist.
@@ -49,6 +56,14 @@ export const devices = pgTable('devices', {
   pushSubscription: jsonb('push_subscription').$type<PushSubscriptionPayload>(),
 }, (table) => ([
   index('devices_user_id_idx').on(table.userId),
+  // Database-level backstop for the one-daemon-per-account rule. The service
+  // layer already checks it twice (at claim time, and again at redemption time
+  // in PairingService.pollPairingCode), but those checks are separate
+  // statements from the INSERT — this partial unique index is what makes a
+  // second daemon row for the same account impossible even in the residual
+  // window between them. Partial, so browser devices are unconstrained: a user
+  // may have as many browsers as they like.
+  uniqueIndex('devices_one_daemon_per_user').on(table.userId).where(sql`${table.type} = 'daemon'`),
 ]));
 
 export const pairingCodes = pgTable('pairing_codes', {

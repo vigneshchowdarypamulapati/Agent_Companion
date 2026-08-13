@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { and, asc, eq, gt, gte, isNull, lt } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, isNotNull, isNull, lt } from 'drizzle-orm';
 import type { PushSubscriptionPayload, SessionEvent, SessionStatus } from '@companion/protocol';
 import type { Device, DismissSessionResult, PairingCode, SessionRecord, Store, StoredSessionEvent, User } from './store.js';
 import type { Db } from './db/client.js';
@@ -116,8 +116,24 @@ export class PostgresStore implements Store {
     return pairing;
   }
 
-  async markPairingCodeRedeemed(deviceCode: string): Promise<void> {
-    await this.db.update(pairingCodes).set({ redeemed: true }).where(eq(pairingCodes.deviceCode, deviceCode));
+  /**
+   * A single conditional UPDATE, like claimPairingCode above: the WHERE clause
+   * is the whole guard, so two concurrent redemptions of the same device code
+   * can never both match — exactly one gets a row back, the other gets none.
+   */
+  async redeemPairingCode(deviceCode: string): Promise<PairingCode | undefined> {
+    const [redeemed] = await this.db
+      .update(pairingCodes)
+      .set({ redeemed: true })
+      .where(
+        and(
+          eq(pairingCodes.deviceCode, deviceCode),
+          isNotNull(pairingCodes.userId),
+          eq(pairingCodes.redeemed, false)
+        )
+      )
+      .returning();
+    return redeemed;
   }
 
   async upsertSession(session: SessionRecord): Promise<void> {

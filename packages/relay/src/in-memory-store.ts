@@ -107,11 +107,19 @@ export class InMemoryStore implements Store {
     return code ? this.pairingCodes.get(code) : undefined;
   }
 
-  async markPairingCodeRedeemed(deviceCode: string): Promise<void> {
+  /**
+   * Check-and-set in one synchronous step (no `await` between the read and the
+   * write), which is the in-memory equivalent of PostgresStore's single
+   * conditional UPDATE: two concurrent callers can never both see
+   * `redeemed === false`.
+   */
+  async redeemPairingCode(deviceCode: string): Promise<PairingCode | undefined> {
     const code = this.pairingCodesByDeviceCode.get(deviceCode);
-    if (!code) return;
+    if (!code) return undefined;
     const pairing = this.pairingCodes.get(code);
-    if (pairing) pairing.redeemed = true;
+    if (!pairing || !pairing.userId || pairing.redeemed) return undefined;
+    pairing.redeemed = true;
+    return { ...pairing };
   }
 
   async upsertSession(session: SessionRecord): Promise<void> {

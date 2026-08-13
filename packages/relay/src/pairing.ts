@@ -39,8 +39,23 @@ export class PairingService {
     if (!pairing.userId) {
       return { status: 'pending' };
     }
-    const { token, device } = await this.mintDeviceToken(pairing.userId, 'daemon', pairing.deviceName);
-    await this.store.markPairingCodeRedeemed(deviceCode);
+    // The one-daemon-per-account rule has to be re-checked *here*, not only at
+    // claim time: the daemon device row doesn't exist until this poll mints it,
+    // so two codes claimed back-to-back both pass the claim-time check and only
+    // this second check stops the second one from minting a second daemon.
+    // 'expired' rather than a new status: from the daemon's point of view this
+    // pairing attempt has failed permanently, exactly like a real expiry.
+    const existingDaemon = await this.store.getDaemonDeviceForUser(pairing.userId);
+    if (existingDaemon) {
+      return { status: 'expired' };
+    }
+    // Redeem before minting: this is the atomic gate, so a concurrent poll that
+    // loses the race gets `undefined` and never mints a duplicate device.
+    const redeemed = await this.store.redeemPairingCode(deviceCode);
+    if (!redeemed) {
+      return { status: 'expired' };
+    }
+    const { token, device } = await this.mintDeviceToken(redeemed.userId!, 'daemon', redeemed.deviceName);
     return { status: 'complete', token, deviceId: device.id };
   }
 
