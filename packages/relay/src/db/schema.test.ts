@@ -29,7 +29,7 @@ describe('schema and migrations', () => {
   it('round-trips a row through every table', async () => {
     const [user] = await db
       .insert(users)
-      .values({ email: `schema-test-${Date.now()}@example.com`, createdAt: 1 })
+      .values({ clerkUserId: `clerk-schema-test-${Date.now()}`, email: `schema-test-${Date.now()}@example.com`, createdAt: 1 })
       .returning();
     expect(user.id).toBeDefined();
 
@@ -41,7 +41,14 @@ describe('schema and migrations', () => {
 
     const [pairing] = await db
       .insert(pairingCodes)
-      .values({ code: `${Date.now()}`.slice(-6), userId: user.id, expiresAt: 1, consumed: false })
+      .values({
+        code: `${Date.now()}`.slice(-6),
+        deviceCode: `device-code-${Date.now()}`,
+        userId: user.id,
+        deviceName: 'test-device',
+        expiresAt: 1,
+        redeemed: false,
+      })
       .returning();
     expect(pairing.code).toBeDefined();
 

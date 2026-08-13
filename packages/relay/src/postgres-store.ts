@@ -1,12 +1,11 @@
-import { randomInt } from 'node:crypto';
-import { and, asc, eq, gt, gte, lt } from 'drizzle-orm';
+import { randomInt, randomUUID } from 'node:crypto';
+import { and, asc, eq, gt, gte, isNull, lt } from 'drizzle-orm';
 import type { PushSubscriptionPayload, SessionEvent, SessionStatus } from '@companion/protocol';
 import type { Device, DismissSessionResult, PairingCode, SessionRecord, Store, StoredSessionEvent, User } from './store.js';
 import type { Db } from './db/client.js';
 import { users, devices, pairingCodes, sessions, sessionEvents } from './db/schema.js';
 
 const PAIRING_CODE_TTL_MS = 5 * 60 * 1000;
-const DEFAULT_USER_EMAIL = 'you@example.com';
 
 export class PostgresStore implements Store {
   constructor(
@@ -14,11 +13,11 @@ export class PostgresStore implements Store {
     private now: () => number = Date.now
   ) {}
 
-  async getOrCreateDefaultUser(): Promise<User> {
+  async getOrCreateUserByClerkId(clerkUserId: string, email: string): Promise<User> {
     const [user] = await this.db
       .insert(users)
-      .values({ email: DEFAULT_USER_EMAIL, createdAt: this.now() })
-      .onConflictDoUpdate({ target: users.email, set: { email: DEFAULT_USER_EMAIL } })
+      .values({ clerkUserId, email, createdAt: this.now() })
+      .onConflictDoUpdate({ target: users.clerkUserId, set: { email } })
       .returning();
     return user;
   }
@@ -63,27 +62,62 @@ export class PostgresStore implements Store {
     return rows.map((d) => ({ ...d, pushSubscription: d.pushSubscription ?? undefined }));
   }
 
-  async createPairingCode(userId: string): Promise<PairingCode> {
+  async getDaemonDeviceForUser(userId: string): Promise<Device | undefined> {
+    const [device] = await this.db
+      .select()
+      .from(devices)
+      .where(and(eq(devices.userId, userId), eq(devices.type, 'daemon')));
+    if (!device) return undefined;
+    return { ...device, pushSubscription: device.pushSubscription ?? undefined };
+  }
+
+  async createPairingCode(deviceName: string): Promise<PairingCode> {
     // Expired codes are never otherwise deleted; sweep them here so this
-    // table doesn't grow forever now that storage is durable across restarts
-    // (the old InMemoryStore leaked the same way, but a process restart used
-    // to clear it for free — that safety net is gone).
+    // table doesn't grow forever now that storage is durable across restarts.
     await this.db.delete(pairingCodes).where(lt(pairingCodes.expiresAt, this.now()));
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    const deviceCode = randomUUID();
     const [pairing] = await this.db
       .insert(pairingCodes)
-      .values({ code, userId, expiresAt: this.now() + PAIRING_CODE_TTL_MS, consumed: false })
+      .values({
+        code,
+        deviceCode,
+        userId: null,
+        deviceName,
+        expiresAt: this.now() + PAIRING_CODE_TTL_MS,
+        redeemed: false,
+      })
       .returning();
     return pairing;
   }
 
-  async consumePairingCode(code: string): Promise<PairingCode | undefined> {
-    const [pairing] = await this.db
+  async claimPairingCode(code: string, userId: string): Promise<'ok' | 'not_found' | 'expired' | 'already_claimed'> {
+    // A single conditional UPDATE is the atomic success path — it only
+    // matches (and claims) a row that is unexpired and not yet claimed.
+    // The SELECT below only runs to classify *why* it didn't match, for a
+    // precise result; it never decides the outcome itself.
+    const [claimed] = await this.db
       .update(pairingCodes)
-      .set({ consumed: true })
-      .where(and(eq(pairingCodes.code, code), eq(pairingCodes.consumed, false), gte(pairingCodes.expiresAt, this.now())))
+      .set({ userId })
+      .where(
+        and(eq(pairingCodes.code, code), isNull(pairingCodes.userId), gte(pairingCodes.expiresAt, this.now()))
+      )
       .returning();
+    if (claimed) return 'ok';
+
+    const [pairing] = await this.db.select().from(pairingCodes).where(eq(pairingCodes.code, code));
+    if (!pairing) return 'not_found';
+    if (pairing.expiresAt < this.now()) return 'expired';
+    return 'already_claimed';
+  }
+
+  async getPairingCodeByDeviceCode(deviceCode: string): Promise<PairingCode | undefined> {
+    const [pairing] = await this.db.select().from(pairingCodes).where(eq(pairingCodes.deviceCode, deviceCode));
     return pairing;
+  }
+
+  async markPairingCodeRedeemed(deviceCode: string): Promise<void> {
+    await this.db.update(pairingCodes).set({ redeemed: true }).where(eq(pairingCodes.deviceCode, deviceCode));
   }
 
   async upsertSession(session: SessionRecord): Promise<void> {

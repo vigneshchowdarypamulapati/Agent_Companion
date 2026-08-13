@@ -15,6 +15,20 @@
       "when": 1786471772481,
       "tag": "0001_kind_azazel",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786630110652,
+      "tag": "0002_add_clerk_user_id_and_redeemed",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786630149900,
+      "tag": "0003_drop_pairing_codes_consumed",
+      "breakpoints": true
     }
   ]
 }

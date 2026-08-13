@@ -34,7 +34,8 @@ import type { PushSubscriptionPayload, SessionEvent } from '@companion/protocol'
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
-  email: text('email').notNull().unique(),
+  clerkUserId: text('clerk_user_id').notNull().unique(),
+  email: text('email').notNull(),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
 });
 
@@ -52,9 +53,11 @@ export const devices = pgTable('devices', {
 
 export const pairingCodes = pgTable('pairing_codes', {
   code: text('code').primaryKey(),
-  userId: text('user_id').notNull(),
+  deviceCode: text('device_code').notNull().unique(),
+  userId: text('user_id'),
+  deviceName: text('device_name').notNull(),
   expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
-  consumed: boolean('consumed').notNull().default(false),
+  redeemed: boolean('redeemed').notNull().default(false),
 });
 
 export const sessions = pgTable('sessions', {
