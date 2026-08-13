@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { getDevice, unpairDevice, type DeviceInfo } from './api/devices';
+import { claimPairingCode } from './api/pairing';
 import { UnauthorizedError } from './api/sessions';
 import { getVapidPublicKey } from './api/push';
 import {
@@ -27,6 +28,10 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
   const [pushSubscribed, setPushSubscribed] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   const [pushError, setPushError] = useState<string | undefined>();
+  const [pairingCode, setPairingCode] = useState('');
+  const [pairBusy, setPairBusy] = useState(false);
+  const [pairError, setPairError] = useState<string | undefined>();
+  const [pairSucceeded, setPairSucceeded] = useState(false);
   const onUnpairedRef = useRef(onUnpaired);
   onUnpairedRef.current = onUnpaired;
 
@@ -83,6 +88,28 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
       setUnpairError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleClaimPairingCode(event: React.FormEvent) {
+    event.preventDefault();
+    setPairBusy(true);
+    setPairError(undefined);
+    setPairSucceeded(false);
+    try {
+      await claimPairingCode(token, pairingCode.trim());
+      setPairingCode('');
+      setPairSucceeded(true);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnpairedRef.current();
+        return;
+      }
+      // The relay's pairing errors are already user-actionable ("Invalid
+      // pairing code", "Pairing code expired", …), so they're surfaced as-is.
+      setPairError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPairBusy(false);
     }
   }
 
@@ -144,6 +171,40 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
           <p className="text-sm text-slate-400">Paired {new Date(device.createdAt).toLocaleDateString()}</p>
         </div>
       )}
+
+      <form onSubmit={handleClaimPairingCode} className="border-t border-slate-700 pt-4 space-y-3">
+        <h2 className="text-sm font-medium text-slate-300">Pair a daemon</h2>
+        <p className="text-sm text-slate-400">
+          Start the Companion daemon on your machine and enter the 6-digit code it prints.
+        </p>
+        <label htmlFor="pairing-code" className="block text-sm text-slate-400">
+          Pairing code
+        </label>
+        <input
+          id="pairing-code"
+          name="pairing-code"
+          type="text"
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          maxLength={6}
+          value={pairingCode}
+          onChange={(e) => setPairingCode(e.target.value)}
+          className="w-full rounded-md bg-slate-800 px-3 py-2 tracking-widest"
+        />
+        <button
+          type="submit"
+          disabled={pairBusy || pairingCode.trim().length === 0}
+          className="w-full rounded-md bg-blue-600 px-3 py-2 font-medium disabled:opacity-50"
+        >
+          {pairBusy ? 'Pairing…' : 'Pair daemon'}
+        </button>
+        {pairSucceeded && <p className="text-sm text-green-400">Daemon paired!</p>}
+        {pairError && (
+          <p role="alert" className="text-sm text-red-400">
+            {pairError}
+          </p>
+        )}
+      </form>
 
       {pushAvailable && (
         <div className="border-t border-slate-700 pt-4 space-y-3">

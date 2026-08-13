@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import SettingsScreen from './SettingsScreen';
 import * as devicesApi from './api/devices';
+import * as pairingApi from './api/pairing';
 import { UnauthorizedError } from './api/sessions';
 import * as pushApi from './api/push';
 import * as pushNotifications from './push-notifications';
@@ -157,6 +158,86 @@ describe('SettingsScreen', () => {
 
     await screen.findByText('Chrome on Mac');
     expect(screen.getByRole('link', { name: /back/i })).toHaveAttribute('href', '/');
+  });
+
+  describe('pair a daemon section', () => {
+    function mockDeviceLoad() {
+      vi.spyOn(devicesApi, 'getDevice').mockResolvedValue({
+        id: 'dev-1',
+        type: 'browser',
+        name: 'Chrome on Mac',
+        createdAt: 1,
+      });
+    }
+
+    it('submitting a code calls claimPairingCode with this browser token and the code', async () => {
+      mockDeviceLoad();
+      const claim = vi.spyOn(pairingApi, 'claimPairingCode').mockResolvedValue(undefined);
+
+      renderSettings();
+
+      await screen.findByText('Chrome on Mac');
+      await userEvent.type(screen.getByLabelText(/pairing code/i), '123456');
+      await userEvent.click(screen.getByRole('button', { name: /pair daemon/i }));
+
+      expect(claim).toHaveBeenCalledWith('tok-1', '123456');
+    });
+
+    it('the submit button is disabled until a code is entered', async () => {
+      mockDeviceLoad();
+
+      renderSettings();
+
+      await screen.findByText('Chrome on Mac');
+      expect(screen.getByRole('button', { name: /pair daemon/i })).toBeDisabled();
+      await userEvent.type(screen.getByLabelText(/pairing code/i), '123456');
+      expect(screen.getByRole('button', { name: /pair daemon/i })).toBeEnabled();
+    });
+
+    it('shows a success confirmation and clears the input after a successful claim', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pairingApi, 'claimPairingCode').mockResolvedValue(undefined);
+
+      renderSettings();
+
+      await screen.findByText('Chrome on Mac');
+      await userEvent.type(screen.getByLabelText(/pairing code/i), '123456');
+      await userEvent.click(screen.getByRole('button', { name: /pair daemon/i }));
+
+      expect(await screen.findByText(/daemon paired/i)).toBeInTheDocument();
+      expect(screen.getByLabelText(/pairing code/i)).toHaveValue('');
+    });
+
+    it("surfaces the relay's error message when the claim fails", async () => {
+      mockDeviceLoad();
+      vi.spyOn(pairingApi, 'claimPairingCode').mockRejectedValue(
+        new Error('Account already has a paired daemon — unpair it first')
+      );
+
+      renderSettings();
+
+      await screen.findByText('Chrome on Mac');
+      await userEvent.type(screen.getByLabelText(/pairing code/i), '123456');
+      await userEvent.click(screen.getByRole('button', { name: /pair daemon/i }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Account already has a paired daemon — unpair it first'
+      );
+      expect(screen.queryByText(/daemon paired!/i)).not.toBeInTheDocument();
+    });
+
+    it('calls onUnpaired if the claim gets a 401', async () => {
+      mockDeviceLoad();
+      vi.spyOn(pairingApi, 'claimPairingCode').mockRejectedValue(new UnauthorizedError());
+
+      const onUnpaired = renderSettings();
+
+      await screen.findByText('Chrome on Mac');
+      await userEvent.type(screen.getByLabelText(/pairing code/i), '123456');
+      await userEvent.click(screen.getByRole('button', { name: /pair daemon/i }));
+
+      await waitFor(() => expect(onUnpaired).toHaveBeenCalled());
+    });
   });
 
   describe('notifications section', () => {
