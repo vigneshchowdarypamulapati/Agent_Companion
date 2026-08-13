@@ -16,6 +16,10 @@ import type { IdentityVerifier } from './identity-verifier.js';
 import { PairingService } from './pairing.js';
 import { ConnectionHub, type Connection } from './hub.js';
 import type { PushSender } from './push-sender.js';
+import { RateLimiter } from './rate-limiter.js';
+
+const FIVE_MINUTES_MS = 5 * 60 * 1000;
+const ONE_HOUR_MS = 60 * 60 * 1000;
 
 function asyncHandler(fn: (req: Request, res: Response) => Promise<void> | void) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -54,12 +58,32 @@ export async function createRelayServer({
   const hub = new ConnectionHub(store, pubsub, undefined, undefined, pushSender);
   await hub.start();
 
+  // A pairing code is 6 digits (10^6) and lives 5 minutes. Unthrottled, that
+  // space is brute-forceable inside one code's lifetime by anyone who can sign
+  // up (signup is public), and a hit hijacks a stranger's daemon onto the
+  // attacker's account — so /pairing/claim is capped per calling device.
+  // request-code and register-browser are capped per IP simply to keep an
+  // anonymous caller from filling the pairing-code space or the devices table.
+  // Caveat on the two IP-keyed limits: behind a reverse proxy, `req.ip` is the
+  // proxy's address unless Express's `trust proxy` is enabled, which would make
+  // those two caps effectively global. That is deliberately not enabled here —
+  // trusting X-Forwarded-For without knowing the real hop count lets a client
+  // forge its own key, which is strictly worse than a shared bucket. Revisit
+  // together, once there is a known deployment topology to configure it from.
+  const claimLimiter = new RateLimiter(10, FIVE_MINUTES_MS);
+  const requestCodeLimiter = new RateLimiter(20, FIVE_MINUTES_MS);
+  const registerBrowserLimiter = new RateLimiter(10, ONE_HOUR_MS);
+
   const app = express();
   app.use(express.json());
 
   app.post(
     '/pairing/request-code',
     asyncHandler(async (req, res) => {
+      if (!requestCodeLimiter.attempt(req.ip ?? 'unknown')) {
+        res.status(429).json({ error: 'Too many pairing attempts, try again later' });
+        return;
+      }
       const { deviceName } = RequestPairingCodeRequest.parse(req.body);
       const result = await pairing.requestPairingCode(deviceName);
       res.status(201).json(result);
@@ -72,6 +96,10 @@ export async function createRelayServer({
       const device = await authenticate(req, pairing);
       if (!device) {
         res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      if (!claimLimiter.attempt(device.id)) {
+        res.status(429).json({ error: 'Too many pairing attempts, try again later' });
         return;
       }
       const { code } = ClaimPairingRequest.parse(req.body);
@@ -108,6 +136,10 @@ export async function createRelayServer({
   app.post(
     '/devices/register-browser',
     asyncHandler(async (req, res) => {
+      if (!registerBrowserLimiter.attempt(req.ip ?? 'unknown')) {
+        res.status(429).json({ error: 'Too many pairing attempts, try again later' });
+        return;
+      }
       const header = req.header('authorization');
       const [scheme, clerkToken] = header?.split(' ') ?? [];
       if (!clerkToken || scheme.toLowerCase() !== 'bearer') {

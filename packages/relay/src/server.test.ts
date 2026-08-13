@@ -25,20 +25,51 @@ function waitForOpen(ws: WebSocket): Promise<void> {
 }
 
 const FAKE_CLERK_TOKEN = 'fake-clerk-token';
+const OTHER_FAKE_CLERK_TOKEN = 'other-fake-clerk-token';
 
 function makeIdentityVerifier(): FakeIdentityVerifier {
   return new FakeIdentityVerifier(
-    new Map([[FAKE_CLERK_TOKEN, { clerkUserId: 'clerk-user-1', email: 'test@example.com' }]])
+    new Map([
+      [FAKE_CLERK_TOKEN, { clerkUserId: 'clerk-user-1', email: 'test@example.com' }],
+      [OTHER_FAKE_CLERK_TOKEN, { clerkUserId: 'clerk-user-2', email: 'other@example.com' }],
+    ])
   );
 }
 
 /** Registers a browser device via the Clerk-authenticated registration route. */
-async function registerBrowser(httpServer: Server, deviceName: string): Promise<string> {
+async function registerBrowser(
+  httpServer: Server,
+  deviceName: string,
+  clerkToken: string = FAKE_CLERK_TOKEN
+): Promise<string> {
   const res = await request(httpServer)
     .post('/devices/register-browser')
-    .set('Authorization', `Bearer ${FAKE_CLERK_TOKEN}`)
+    .set('Authorization', `Bearer ${clerkToken}`)
     .send({ deviceName });
   return res.body.token as string;
+}
+
+/** Opens a daemon WS, starts a session on it, and resolves once the session record exists. */
+async function startSession(
+  store: InMemoryStore,
+  port: number,
+  daemonToken: string,
+  sessionId: string,
+  projectPath: string,
+  sockets: WebSocket[]
+): Promise<void> {
+  const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
+  sockets.push(daemonWs);
+  await waitForOpen(daemonWs);
+  daemonWs.send(
+    JSON.stringify({
+      kind: 'event',
+      sessionId,
+      seq: 0,
+      event: { type: 'session_started', sessionId, projectPath, at: Date.now() },
+    })
+  );
+  await expect.poll(async () => (await store.getSession(sessionId))?.id, { timeout: 2000 }).toBe(sessionId);
 }
 
 /** Runs the daemon pairing handshake (request-code -> claim by browserToken -> poll) and returns the daemon's token. */
@@ -211,6 +242,29 @@ describe('relay server', () => {
 
     expect(claimRes.status).toBe(409);
     expect(claimRes.body).toEqual({ error: 'Account already has a paired daemon — unpair it first' });
+  });
+
+  it('rate-limits POST /pairing/claim after 10 attempts by the same device', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+
+    // A 6-digit code is guessable inside its 5-minute life without this cap.
+    for (let i = 0; i < 10; i++) {
+      const res = await request(httpServer)
+        .post('/pairing/claim')
+        .set('Authorization', `Bearer ${browserToken}`)
+        .send({ code: String(i).padStart(6, '0') });
+      expect(res.status).toBe(404);
+    }
+
+    const blocked = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({ code: '999999' });
+    expect(blocked.status).toBe(429);
+    expect(blocked.body).toEqual({ error: 'Too many pairing attempts, try again later' });
   });
 
   it('returns 401 for POST /devices/register-browser without an Authorization header', async () => {
@@ -393,6 +447,81 @@ describe('relay server', () => {
       .get('/sessions/sess-1/events')
       .set('Authorization', `Bearer ${intruderToken}`);
     expect(eventsRes.status).toBe(404);
+  });
+
+  // --- cross-account isolation, through the real registration path ---
+
+  it('two different Clerk identities get fully isolated accounts', async () => {
+    const store = new InMemoryStore();
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    // Two real users, each registering through /devices/register-browser with
+    // their own Clerk identity — no fabricated device rows anywhere here.
+    const aliceToken = await registerBrowser(httpServer, 'alice-phone', FAKE_CLERK_TOKEN);
+    const bobToken = await registerBrowser(httpServer, 'bob-phone', OTHER_FAKE_CLERK_TOKEN);
+    expect(aliceToken).not.toBe(bobToken);
+
+    // Each pairs its own daemon — the one-daemon-per-account rule is per
+    // account, so both succeeding is itself evidence they're separate accounts.
+    const aliceDaemon = await pairDaemon(httpServer, aliceToken, 'alice-laptop');
+    const bobDaemon = await pairDaemon(httpServer, bobToken, 'bob-laptop');
+    expect(typeof aliceDaemon).toBe('string');
+    expect(typeof bobDaemon).toBe('string');
+
+    await startSession(store, port, aliceDaemon, 'sess-alice', '/alice/secret', sockets);
+    await startSession(store, port, bobDaemon, 'sess-bob', '/bob/secret', sockets);
+
+    // Neither sees the other's session in their active list...
+    const aliceList = await request(httpServer).get('/sessions/active').set('Authorization', `Bearer ${aliceToken}`);
+    expect(aliceList.body.map((s: { id: string }) => s.id)).toEqual(['sess-alice']);
+    const bobList = await request(httpServer).get('/sessions/active').set('Authorization', `Bearer ${bobToken}`);
+    expect(bobList.body.map((s: { id: string }) => s.id)).toEqual(['sess-bob']);
+
+    // ...nor by asking for it directly by id (404, not 403 — see the ownership tests above).
+    const aliceProbingBob = await request(httpServer)
+      .get('/sessions/sess-bob')
+      .set('Authorization', `Bearer ${aliceToken}`);
+    expect(aliceProbingBob.status).toBe(404);
+    const bobProbingAlice = await request(httpServer)
+      .get('/sessions/sess-alice/events')
+      .set('Authorization', `Bearer ${bobToken}`);
+    expect(bobProbingAlice.status).toBe(404);
+  });
+
+  it('two browsers registering with the same Clerk identity land on the same account', async () => {
+    const store = new InMemoryStore();
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    // Same Clerk user, two distinct browsers (phone and laptop): distinct
+    // device tokens, but one account behind them.
+    const phoneToken = await registerBrowser(httpServer, 'phone', FAKE_CLERK_TOKEN);
+    const laptopToken = await registerBrowser(httpServer, 'laptop', FAKE_CLERK_TOKEN);
+    expect(phoneToken).not.toBe(laptopToken);
+
+    // The daemon is paired by the phone only...
+    const daemonToken = await pairDaemon(httpServer, phoneToken, 'work-laptop');
+    await startSession(store, port, daemonToken, 'sess-1', '/tmp/project', sockets);
+
+    // ...and the laptop browser, which never touched that pairing, still sees it.
+    const laptopList = await request(httpServer).get('/sessions/active').set('Authorization', `Bearer ${laptopToken}`);
+    expect(laptopList.status).toBe(200);
+    expect(laptopList.body.map((s: { id: string }) => s.id)).toEqual(['sess-1']);
+
+    const laptopDetail = await request(httpServer).get('/sessions/sess-1').set('Authorization', `Bearer ${laptopToken}`);
+    expect(laptopDetail.status).toBe(200);
+
+    // And the one-daemon-per-account rule is shared too: the second browser
+    // cannot pair a second daemon, because it's the same account.
+    const codeRes = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'second-laptop' });
+    const claimRes = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${laptopToken}`)
+      .send({ code: codeRes.body.code });
+    expect(claimRes.status).toBe(409);
   });
 
   // --- diagnostic error frame instead of silent drop ---
