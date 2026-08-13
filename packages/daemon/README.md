@@ -42,13 +42,30 @@ production control channel for the web app.
 
 ## Relay connection
 
-On first run with `COMPANION_RELAY_URL` set, the daemon self-pairs: it calls
-the relay's `POST /pairing/request-code` (intentionally unauthenticated in
-v1 — see `packages/relay/README.md`) and `POST /pairing/redeem` with
-`deviceType: 'daemon'`, then persists the returned token to
-`COMPANION_DEVICE_TOKEN_PATH` so subsequent restarts reuse it without
-re-pairing. It then opens `wss://<relay>/ws?token=<token>` and reconnects
-with exponential backoff (500ms, doubling, capped at 10s) on any disconnect.
+On first run with `COMPANION_RELAY_URL` set, the daemon pairs itself to a
+human's account — it cannot mint its own credentials, because it has no way
+to prove whose machine it is:
+
+1. It calls the relay's `POST /pairing/request-code` (unauthenticated — at
+   this point the code belongs to nobody) and gets back a 6-digit `code`,
+   a private `deviceCode`, and an expiry 5 minutes out.
+2. It prints the `code` to the console for the human, who opens the
+   Companion web app — already signed in with Clerk — goes to **Settings →
+   Pair a daemon**, and enters it. That browser's `POST /pairing/claim`
+   links the pending code to the human's account.
+3. Meanwhile the daemon polls `POST /pairing/poll` with its private
+   `deviceCode` every 2 seconds. Until the claim happens it gets
+   `{ status: 'pending' }`; once it does, that poll mints and returns this
+   daemon's own device token. A 5xx or network error mid-poll is retried
+   like a `pending` result rather than aborting the attempt, still bounded
+   by the code's 5-minute expiry.
+
+An account may have only one daemon at a time — pairing a replacement means
+unpairing the existing one first (Settings → Unpair). The returned token is
+persisted to `COMPANION_DEVICE_TOKEN_PATH` so subsequent restarts reuse it
+without re-pairing. The daemon then opens `wss://<relay>/ws?token=<token>`
+and reconnects with exponential backoff (500ms, doubling, capped at 10s) on
+any disconnect.
 
 A command the relay routes to this daemon that fails (e.g. references an
 unknown or already-stopped session) is turned into a `command_failed` `SessionEvent`

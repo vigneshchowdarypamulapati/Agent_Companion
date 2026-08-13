@@ -8,8 +8,12 @@ over WebSocket, persisting both durably.
 
 Requires a Postgres database (Neon in this project) — set `DATABASE_URL`
 to a connection string before starting; the relay fails fast at startup if
-it's unset. For local development, copy the example env file and fill in
-a real connection string:
+it's unset. It equally requires `CLERK_SECRET_KEY` (from the Clerk
+dashboard's API keys page, the same Clerk application whose publishable key
+the web app uses): every browser registration is authenticated by verifying
+a Clerk session token against it, so the relay also fails fast at startup if
+that one is unset — there is no unauthenticated fallback path. For local
+development, copy the example env file and fill in both:
 
     cp packages/relay/.env.example packages/relay/.env
 
@@ -37,6 +41,11 @@ the HTTP server starts listening — there's no separate migrate command to
 run by hand. When `src/db/schema.ts` changes, generate a new migration with
 `npm run db:generate -w @companion/relay` and commit the resulting files.
 
+Migrations `0002`/`0003` (the Clerk-user-id and pairing-code-redemption
+schema change) are destructive against a populated `users`/`pairing_codes`
+table — they add `NOT NULL` columns with no backfill — and assume a
+from-scratch deployment with zero existing rows.
+
 Set `COMPANION_RELAY_PORT` (default `8787`) and `COMPANION_RELAY_HOST`
 (default `0.0.0.0` — unlike the daemon, this server is meant to be
 publicly reachable) to configure the listener.
@@ -59,7 +68,12 @@ today and `GET /push/vapid-public-key` returns `404`.
 - `POST /pairing/poll` `{ deviceCode }` — the daemon that requested the
   code polls this until a browser claims it, then receives its device
   token. Always `200`, with `{ status: 'pending' | 'expired' }` or
-  `{ status: 'complete', token, deviceId }`.
+  `{ status: 'complete', token, deviceId }`. Redemption is a single atomic
+  step (`Store.redeemPairingCode`), so a code mints exactly one daemon
+  token no matter how many polls race. `expired` also covers "this account
+  acquired a daemon since the code was claimed" — the one-daemon-per-account
+  rule is re-checked here, not just at claim time, because the daemon device
+  row doesn't exist until this call creates it.
 - `POST /devices/register-browser` `{ deviceName }`, authenticated with a
   Clerk session token (not a device token) — exchanges Clerk identity for
   this browser's own long-lived companion device token. Called once per
@@ -103,6 +117,16 @@ user; anything else (missing, or owned by someone else) returns
 `404 Unknown session` (never `403`, so session ids cannot be enumerated).
 `POST /sessions/:id/dismiss` additionally returns `409` if the session
 exists but hasn't stopped yet.
+
+### Rate limits
+
+The three account-creating/linking routes are throttled in memory
+(`src/rate-limiter.ts`), returning
+`429 { error: 'Too many pairing attempts, try again later' }` past the cap:
+`/pairing/claim` 10 per 5 minutes per calling device (a 6-digit code is
+otherwise brute-forceable inside its own lifetime), `/pairing/request-code`
+20 per 5 minutes per IP, and `/devices/register-browser` 10 per hour per IP.
+The counters live in this process, like `PubSub` — see "Current scope" below.
 
 ## WebSocket
 
