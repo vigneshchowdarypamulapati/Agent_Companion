@@ -18,9 +18,11 @@ export interface Device {
 
 export interface PairingCode {
   code: string;
-  userId: string;
+  deviceCode: string;
+  userId: string | null;
+  deviceName: string;
   expiresAt: number;
-  consumed: boolean;
+  redeemed: boolean;
 }
 
 export interface SessionRecord {
@@ -44,7 +46,7 @@ export interface StoredSessionEvent {
 export type DismissSessionResult = 'ok' | 'not_found' | 'forbidden' | 'not_stopped';
 
 export interface Store {
-  getOrCreateDefaultUser(): Promise<User>;
+  getOrCreateUserByClerkId(clerkUserId: string, email: string): Promise<User>;
   createDevice(input: {
     userId: string;
     type: 'daemon' | 'browser';
@@ -55,8 +57,11 @@ export interface Store {
   deleteDevice(deviceId: string): Promise<void>;
   setPushSubscription(deviceId: string, subscription: PushSubscriptionPayload | undefined): Promise<void>;
   getDevicesForUser(userId: string): Promise<Device[]>;
-  createPairingCode(userId: string): Promise<PairingCode>;
-  consumePairingCode(code: string): Promise<PairingCode | undefined>;
+  getDaemonDeviceForUser(userId: string): Promise<Device | undefined>;
+  createPairingCode(deviceName: string): Promise<PairingCode>;
+  claimPairingCode(code: string, userId: string): Promise<'ok' | 'not_found' | 'expired' | 'already_claimed'>;
+  getPairingCodeByDeviceCode(deviceCode: string): Promise<PairingCode | undefined>;
+  markPairingCodeRedeemed(deviceCode: string): Promise<void>;
   upsertSession(session: SessionRecord): Promise<void>;
   updateSessionStatus(sessionId: string, status: SessionStatus): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;

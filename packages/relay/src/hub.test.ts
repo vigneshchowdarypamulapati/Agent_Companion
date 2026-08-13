@@ -634,10 +634,10 @@ describe('ConnectionHub', () => {
     const pushSender = fakePushSender();
     const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
     await hub.start();
-    const user = await store.getOrCreateDefaultUser();
-    const browserDevice = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const userId = 'user-1';
+    const browserDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
     await store.setPushSubscription(browserDevice.id, subscriptionA);
-    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
 
     await hub.routeFromDaemon(daemon, 'sess-1', {
       type: 'session_started',
@@ -666,10 +666,10 @@ describe('ConnectionHub', () => {
     const pushSender = fakePushSender();
     const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
     await hub.start();
-    const user = await store.getOrCreateDefaultUser();
-    const browserDevice = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const userId = 'user-1';
+    const browserDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
     await store.setPushSubscription(browserDevice.id, subscriptionA);
-    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
 
     await hub.routeFromDaemon(daemon, 'sess-1', {
       type: 'session_started',
@@ -688,10 +688,10 @@ describe('ConnectionHub', () => {
     const pushSender = fakePushSender();
     const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
     await hub.start();
-    const user = await store.getOrCreateDefaultUser();
-    const browserDevice = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const userId = 'user-1';
+    const browserDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
     await store.setPushSubscription(browserDevice.id, subscriptionA);
-    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
 
     await hub.routeFromDaemon(daemon, 'sess-1', {
       type: 'session_started',
@@ -709,9 +709,9 @@ describe('ConnectionHub', () => {
     const pushSender = fakePushSender();
     const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
     await hub.start();
-    const user = await store.getOrCreateDefaultUser();
-    await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
-    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+    const userId = 'user-1';
+    await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
 
     await hub.routeFromDaemon(daemon, 'sess-1', {
       type: 'session_started',
@@ -729,17 +729,17 @@ describe('ConnectionHub', () => {
     const pushSender = fakePushSender();
     const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
     await hub.start();
-    const user = await store.getOrCreateDefaultUser();
-    const deviceA = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const userId = 'user-1';
+    const deviceA = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
     const deviceB = await store.createDevice({
-      userId: user.id,
+      userId,
       type: 'browser',
       name: 'laptop-browser',
       tokenHash: 'h2',
     });
     await store.setPushSubscription(deviceA.id, subscriptionA);
     await store.setPushSubscription(deviceB.id, subscriptionB);
-    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
 
     await hub.routeFromDaemon(daemon, 'sess-1', {
       type: 'session_started',
@@ -758,12 +758,12 @@ describe('ConnectionHub', () => {
     const pushSender = fakePushSender();
     const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
     await hub.start();
-    const user = await store.getOrCreateDefaultUser();
-    const daemonDevice = await store.createDevice({ userId: user.id, type: 'daemon', name: 'laptop', tokenHash: 'h1' });
+    const userId = 'user-1';
+    const daemonDevice = await store.createDevice({ userId, type: 'daemon', name: 'laptop', tokenHash: 'h1' });
     // A daemon device could in principle have a pushSubscription field set (nothing in the
     // Store forbids it); the hub must still never target daemon-typed devices.
     await store.setPushSubscription(daemonDevice.id, subscriptionA);
-    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId: user.id });
+    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId });
 
     await hub.routeFromDaemon(daemon, 'sess-1', {
       type: 'session_started',
@@ -781,10 +781,10 @@ describe('ConnectionHub', () => {
     const pushSender = fakePushSender('gone');
     const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
     await hub.start();
-    const user = await store.getOrCreateDefaultUser();
-    const browserDevice = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const userId = 'user-1';
+    const browserDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
     await store.setPushSubscription(browserDevice.id, subscriptionA);
-    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
 
     await hub.routeFromDaemon(daemon, 'sess-1', {
       type: 'session_started',
@@ -794,7 +794,7 @@ describe('ConnectionHub', () => {
     });
     await hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 2 });
 
-    const devices = await store.getDevicesForUser(user.id);
+    const devices = await store.getDevicesForUser(userId);
     expect(devices.find((d) => d.id === browserDevice.id)?.pushSubscription).toBeUndefined();
   });
 
@@ -803,17 +803,17 @@ describe('ConnectionHub', () => {
     const pushSender = fakePushSender('throw');
     const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
     await hub.start();
-    const user = await store.getOrCreateDefaultUser();
-    const deviceA = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const userId = 'user-1';
+    const deviceA = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
     const deviceB = await store.createDevice({
-      userId: user.id,
+      userId,
       type: 'browser',
       name: 'laptop-browser',
       tokenHash: 'h2',
     });
     await store.setPushSubscription(deviceA.id, subscriptionA);
     await store.setPushSubscription(deviceB.id, subscriptionB);
-    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
 
     await hub.routeFromDaemon(daemon, 'sess-1', {
       type: 'session_started',
@@ -833,10 +833,10 @@ describe('ConnectionHub', () => {
   it('does not attempt to send a push notification when no pushSender is configured', async () => {
     const store = new InMemoryStore();
     const hub = await startedHub(store);
-    const user = await store.getOrCreateDefaultUser();
-    const browserDevice = await store.createDevice({ userId: user.id, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    const userId = 'user-1';
+    const browserDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
     await store.setPushSubscription(browserDevice.id, subscriptionA);
-    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
 
     await hub.routeFromDaemon(daemon, 'sess-1', {
       type: 'session_started',
@@ -856,15 +856,15 @@ describe('ConnectionHub', () => {
       const pushSender = fakePushSender();
       const hub = new ConnectionHub(store, new InMemoryPubSub(), 1000, undefined, pushSender);
       await hub.start();
-      const user = await store.getOrCreateDefaultUser();
+      const userId = 'user-1';
       const browserDevice = await store.createDevice({
-        userId: user.id,
+        userId,
         type: 'browser',
         name: 'phone',
         tokenHash: 'h1',
       });
       await store.setPushSubscription(browserDevice.id, subscriptionA);
-      const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: user.id });
+      const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
       hub.register(daemon);
 
       await hub.routeFromDaemon(daemon, 'sess-1', {

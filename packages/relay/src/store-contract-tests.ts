@@ -5,14 +5,14 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
   describe(label, () => {
     it('returns the same default user on repeated calls', async () => {
       const store = await makeStore();
-      const first = await store.getOrCreateDefaultUser();
-      const second = await store.getOrCreateDefaultUser();
+      const first = await store.getOrCreateUserByClerkId('clerk-user-1', 'you@example.com');
+      const second = await store.getOrCreateUserByClerkId('clerk-user-1', 'you@example.com');
       expect(second.id).toBe(first.id);
     });
 
     it('creates a device and finds it by token hash', async () => {
       const store = await makeStore();
-      const user = await store.getOrCreateDefaultUser();
+      const user = await store.getOrCreateUserByClerkId('clerk-user-1', 'you@example.com');
       const device = await store.createDevice({
         userId: user.id,
         type: 'daemon',
@@ -30,7 +30,7 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
 
     it('deleteDevice removes the device so its token no longer authenticates', async () => {
       const store = await makeStore();
-      const user = await store.getOrCreateDefaultUser();
+      const user = await store.getOrCreateUserByClerkId('clerk-user-1', 'you@example.com');
       const device = await store.createDevice({
         userId: user.id,
         type: 'browser',
@@ -50,7 +50,7 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
 
     it('setPushSubscription stores a subscription on the device', async () => {
       const store = await makeStore();
-      const user = await store.getOrCreateDefaultUser();
+      const user = await store.getOrCreateUserByClerkId('clerk-user-1', 'you@example.com');
       const device = await store.createDevice({
         userId: user.id,
         type: 'browser',
@@ -67,7 +67,7 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
 
     it('setPushSubscription with undefined clears an existing subscription', async () => {
       const store = await makeStore();
-      const user = await store.getOrCreateDefaultUser();
+      const user = await store.getOrCreateUserByClerkId('clerk-user-1', 'you@example.com');
       const device = await store.createDevice({
         userId: user.id,
         type: 'browser',
@@ -103,27 +103,102 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
       expect(devices.map((d) => d.name).sort()).toEqual(['laptop', 'phone']);
     });
 
-    it('a pairing code can only be consumed once', async () => {
+    it('a pairing code can only be claimed once', async () => {
       const store = await makeStore();
-      const user = await store.getOrCreateDefaultUser();
-      const pairing = await store.createPairingCode(user.id);
+      const pairing = await store.createPairingCode('my-laptop');
 
-      const first = await store.consumePairingCode(pairing.code);
-      expect(first?.code).toBe(pairing.code);
+      const first = await store.claimPairingCode(pairing.code, 'user-1');
+      expect(first).toBe('ok');
 
-      const second = await store.consumePairingCode(pairing.code);
-      expect(second).toBeUndefined();
+      const second = await store.claimPairingCode(pairing.code, 'user-2');
+      expect(second).toBe('already_claimed');
     });
 
-    it('consumePairingCode returns undefined for an expired code', async () => {
+    it('claimPairingCode returns not_found for an unknown code', async () => {
+      const store = await makeStore();
+      expect(await store.claimPairingCode('000000', 'user-1')).toBe('not_found');
+    });
+
+    it('claimPairingCode returns expired for an expired code', async () => {
       let now = 1_000_000;
       const store = await makeStore(() => now);
-      const user = await store.getOrCreateDefaultUser();
-      const pairing = await store.createPairingCode(user.id);
+      const pairing = await store.createPairingCode('my-laptop');
 
       now += 6 * 60 * 1000; // 6 minutes later, past the 5-minute TTL
 
-      expect(await store.consumePairingCode(pairing.code)).toBeUndefined();
+      expect(await store.claimPairingCode(pairing.code, 'user-1')).toBe('expired');
+    });
+
+    it('getPairingCodeByDeviceCode finds the pairing code by its device code', async () => {
+      const store = await makeStore();
+      const pairing = await store.createPairingCode('my-laptop');
+
+      const found = await store.getPairingCodeByDeviceCode(pairing.deviceCode);
+
+      expect(found?.code).toBe(pairing.code);
+      expect(found?.userId).toBeNull();
+      expect(found?.redeemed).toBe(false);
+    });
+
+    it('getPairingCodeByDeviceCode returns undefined for an unknown device code', async () => {
+      const store = await makeStore();
+      expect(await store.getPairingCodeByDeviceCode('does-not-exist')).toBeUndefined();
+    });
+
+    it('claiming a pairing code is reflected when looked up by device code', async () => {
+      const store = await makeStore();
+      const pairing = await store.createPairingCode('my-laptop');
+
+      await store.claimPairingCode(pairing.code, 'user-1');
+
+      const found = await store.getPairingCodeByDeviceCode(pairing.deviceCode);
+      expect(found?.userId).toBe('user-1');
+    });
+
+    it('markPairingCodeRedeemed sets redeemed to true', async () => {
+      const store = await makeStore();
+      const pairing = await store.createPairingCode('my-laptop');
+
+      await store.markPairingCodeRedeemed(pairing.deviceCode);
+
+      const found = await store.getPairingCodeByDeviceCode(pairing.deviceCode);
+      expect(found?.redeemed).toBe(true);
+    });
+
+    it('markPairingCodeRedeemed is a no-op for an unknown device code', async () => {
+      const store = await makeStore();
+      await expect(store.markPairingCodeRedeemed('does-not-exist')).resolves.toBeUndefined();
+    });
+
+    it('getDaemonDeviceForUser returns the daemon device for that user', async () => {
+      const store = await makeStore();
+      await store.createDevice({ userId: 'user-1', type: 'browser', name: 'phone', tokenHash: 'hash-a' });
+      const daemon = await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-b' });
+
+      const found = await store.getDaemonDeviceForUser('user-1');
+
+      expect(found?.id).toBe(daemon.id);
+    });
+
+    it('getDaemonDeviceForUser returns undefined when the user has no daemon device', async () => {
+      const store = await makeStore();
+      await store.createDevice({ userId: 'user-1', type: 'browser', name: 'phone', tokenHash: 'hash-a' });
+
+      expect(await store.getDaemonDeviceForUser('user-1')).toBeUndefined();
+    });
+
+    it('getOrCreateUserByClerkId returns the same user on repeated calls with the same clerkUserId', async () => {
+      const store = await makeStore();
+      const first = await store.getOrCreateUserByClerkId('clerk-user-1', 'you@example.com');
+      const second = await store.getOrCreateUserByClerkId('clerk-user-1', 'you@example.com');
+      expect(second.id).toBe(first.id);
+    });
+
+    it('getOrCreateUserByClerkId creates distinct users for distinct clerkUserIds', async () => {
+      const store = await makeStore();
+      const first = await store.getOrCreateUserByClerkId('clerk-user-1', 'a@example.com');
+      const second = await store.getOrCreateUserByClerkId('clerk-user-2', 'b@example.com');
+      expect(second.id).not.toBe(first.id);
     });
 
     it('appends and retrieves session events in order, filtered by sinceSeq', async () => {

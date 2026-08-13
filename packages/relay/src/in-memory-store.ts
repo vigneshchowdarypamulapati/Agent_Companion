@@ -14,23 +14,23 @@ const PAIRING_CODE_TTL_MS = 5 * 60 * 1000;
 
 export class InMemoryStore implements Store {
   private users = new Map<string, User>();
-  private defaultUserId: string | undefined;
+  private usersByClerkId = new Map<string, string>();
   private devices = new Map<string, Device>();
   private devicesByTokenHash = new Map<string, string>();
   private pairingCodes = new Map<string, PairingCode>();
+  private pairingCodesByDeviceCode = new Map<string, string>();
   private sessions = new Map<string, SessionRecord>();
   private events = new Map<string, StoredSessionEvent[]>();
   private nextSeq = 1;
 
   constructor(private now: () => number = Date.now) {}
 
-  async getOrCreateDefaultUser(): Promise<User> {
-    if (this.defaultUserId) {
-      return this.users.get(this.defaultUserId)!;
-    }
-    const user: User = { id: randomUUID(), email: 'you@example.com', createdAt: this.now() };
+  async getOrCreateUserByClerkId(clerkUserId: string, email: string): Promise<User> {
+    const existingId = this.usersByClerkId.get(clerkUserId);
+    if (existingId) return this.users.get(existingId)!;
+    const user: User = { id: randomUUID(), email, createdAt: this.now() };
     this.users.set(user.id, user);
-    this.defaultUserId = user.id;
+    this.usersByClerkId.set(clerkUserId, user.id);
     return user;
   }
 
@@ -73,25 +73,45 @@ export class InMemoryStore implements Store {
     return [...this.devices.values()].filter((d) => d.userId === userId);
   }
 
-  async createPairingCode(userId: string): Promise<PairingCode> {
+  async getDaemonDeviceForUser(userId: string): Promise<Device | undefined> {
+    return [...this.devices.values()].find((d) => d.userId === userId && d.type === 'daemon');
+  }
+
+  async createPairingCode(deviceName: string): Promise<PairingCode> {
     const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    const deviceCode = randomUUID();
     const pairing: PairingCode = {
       code,
-      userId,
+      deviceCode,
+      userId: null,
+      deviceName,
       expiresAt: this.now() + PAIRING_CODE_TTL_MS,
-      consumed: false,
+      redeemed: false,
     };
     this.pairingCodes.set(code, pairing);
+    this.pairingCodesByDeviceCode.set(deviceCode, code);
     return pairing;
   }
 
-  async consumePairingCode(code: string): Promise<PairingCode | undefined> {
+  async claimPairingCode(code: string, userId: string): Promise<'ok' | 'not_found' | 'expired' | 'already_claimed'> {
     const pairing = this.pairingCodes.get(code);
-    if (!pairing || pairing.consumed || pairing.expiresAt < this.now()) {
-      return undefined;
-    }
-    pairing.consumed = true;
-    return pairing;
+    if (!pairing) return 'not_found';
+    if (pairing.expiresAt < this.now()) return 'expired';
+    if (pairing.userId) return 'already_claimed';
+    pairing.userId = userId;
+    return 'ok';
+  }
+
+  async getPairingCodeByDeviceCode(deviceCode: string): Promise<PairingCode | undefined> {
+    const code = this.pairingCodesByDeviceCode.get(deviceCode);
+    return code ? this.pairingCodes.get(code) : undefined;
+  }
+
+  async markPairingCodeRedeemed(deviceCode: string): Promise<void> {
+    const code = this.pairingCodesByDeviceCode.get(deviceCode);
+    if (!code) return;
+    const pairing = this.pairingCodes.get(code);
+    if (pairing) pairing.redeemed = true;
   }
 
   async upsertSession(session: SessionRecord): Promise<void> {
