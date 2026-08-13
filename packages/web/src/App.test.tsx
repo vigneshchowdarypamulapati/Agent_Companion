@@ -2,22 +2,37 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
-import * as pairingApi from './api/pairing';
 import * as sessionsApi from './api/sessions';
 import * as devicesApi from './api/devices';
 import { clearStoredCredentials, storeCredentials } from './storage';
 import * as useRelayConnectionModule from './use-relay-connection';
+
+let mockSignedIn = false;
+const mockSignOut = vi.fn();
+// BrowserRegistrationGate (rendered by App's SignedIn branch) calls useAuth
+// from this same mocked module, so it must be mocked here too even though
+// this file's tests exercise it only indirectly.
+const mockGetToken = vi.fn().mockResolvedValue('clerk-tok-1');
+vi.mock('@clerk/clerk-react', () => ({
+  SignedIn: ({ children }: { children: React.ReactNode }) => (mockSignedIn ? <>{children}</> : null),
+  SignedOut: ({ children }: { children: React.ReactNode }) => (mockSignedIn ? null : <>{children}</>),
+  SignIn: () => <div>Sign in to Companion</div>,
+  useClerk: () => ({ signOut: mockSignOut }),
+  useAuth: () => ({ getToken: mockGetToken }),
+}));
 
 describe('App', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     clearStoredCredentials();
     window.history.pushState({}, '', '/');
+    mockSignedIn = false;
+    mockSignOut.mockClear();
   });
 
-  it('shows PairingScreen when there are no stored credentials', () => {
+  it('shows the Clerk sign-in UI when signed out and there are no stored credentials', () => {
     render(<App />);
-    expect(screen.getByText('Pair this device')).toBeInTheDocument();
+    expect(screen.getByText('Sign in to Companion')).toBeInTheDocument();
   });
 
   it('shows the session list when credentials are already stored', async () => {
@@ -33,8 +48,9 @@ describe('App', () => {
     expect(await screen.findByText('No active sessions.')).toBeInTheDocument();
   });
 
-  it('switches to the session list after pairing succeeds', async () => {
-    vi.spyOn(pairingApi, 'redeemPairingCode').mockResolvedValue({ token: 'tok-1', deviceId: 'dev-1' });
+  it('registers this browser after Clerk sign-in and shows the session list', async () => {
+    mockSignedIn = true;
+    vi.spyOn(devicesApi, 'registerBrowserDevice').mockResolvedValue({ token: 'tok-1', deviceId: 'dev-1' });
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connected: true,
@@ -42,9 +58,6 @@ describe('App', () => {
     });
 
     render(<App />);
-
-    await userEvent.type(screen.getByLabelText(/enter pairing code/i), '123456');
-    await userEvent.click(screen.getByRole('button', { name: /^pair$/i }));
 
     expect(await screen.findByText('No active sessions.')).toBeInTheDocument();
   });
@@ -63,7 +76,7 @@ describe('App', () => {
     expect(await screen.findByText('No active sessions.')).toBeInTheDocument();
   });
 
-  it('shows the settings screen at /settings and returns to the pairing screen after a confirmed unpair', async () => {
+  it('shows the settings screen at /settings and signs out of both layers after a confirmed unpair', async () => {
     storeCredentials({ token: 'tok-1', deviceId: 'dev-1' });
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
@@ -85,6 +98,6 @@ describe('App', () => {
     await userEvent.click(screen.getByRole('button', { name: /unpair this device/i }));
     await userEvent.click(screen.getByRole('button', { name: /confirm unpair/i }));
 
-    expect(await screen.findByText('Pair this device')).toBeInTheDocument();
+    expect(mockSignOut).toHaveBeenCalled();
   });
 });

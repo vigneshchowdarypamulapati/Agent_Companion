@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router';
-import PairingScreen from './PairingScreen';
+import { SignedIn, SignedOut, SignIn, useClerk } from '@clerk/clerk-react';
+import BrowserRegistrationGate from './BrowserRegistrationGate';
 import SessionList from './SessionList';
 import SessionDetail from './SessionDetail';
 import SettingsScreen from './SettingsScreen';
@@ -18,16 +19,34 @@ function KeyedSessionDetail(props: { token: string; onUnauthorized: () => void }
 }
 
 export default function App() {
+  const { signOut } = useClerk();
   const [credentials, setCredentials] = useState(() => getStoredCredentials());
 
-  if (!credentials) {
-    return <PairingScreen onPaired={() => setCredentials(getStoredCredentials())} />;
-  }
-
+  // Clearing only the companion device token would leave the browser still
+  // Clerk-signed-in, which would silently re-register a brand new device
+  // the instant this renders again — defeating the point of unpairing. This
+  // is what actually reproduces the old "unpair = logout" behavior now that
+  // Clerk holds a second, independent layer of credential.
   const handleUnauthorized = () => {
     clearStoredCredentials();
     setCredentials(undefined);
+    void signOut();
   };
+
+  if (!credentials) {
+    return (
+      <>
+        <SignedOut>
+          <div className="min-h-screen bg-slate-900 text-slate-100 flex items-center justify-center p-4">
+            <SignIn />
+          </div>
+        </SignedOut>
+        <SignedIn>
+          <BrowserRegistrationGate onRegistered={setCredentials} />
+        </SignedIn>
+      </>
+    );
+  }
 
   return (
     <SessionsProvider token={credentials.token} onUnauthorized={handleUnauthorized}>

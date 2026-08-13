@@ -29,3 +29,25 @@ export async function unpairDevice(token: string): Promise<void> {
     throw new Error(`Failed to unpair device: HTTP ${res.status}`);
   }
 }
+
+export interface RegisterBrowserResult {
+  token: string;
+  deviceId: string;
+}
+
+export async function registerBrowserDevice(clerkToken: string): Promise<RegisterBrowserResult> {
+  const res = await fetch(`${RELAY_HTTP_URL}/devices/register-browser`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${clerkToken}` },
+    body: JSON.stringify({ deviceName: guessDeviceName() }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `Failed to register this browser: HTTP ${res.status}`);
+  }
+  return (await res.json()) as RegisterBrowserResult;
+}
+
+function guessDeviceName(): string {
+  return typeof navigator !== 'undefined' && navigator.userAgent ? navigator.userAgent.slice(0, 60) : 'Browser';
+}

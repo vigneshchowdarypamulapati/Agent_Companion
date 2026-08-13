@@ -195,7 +195,7 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
         ) : (
           <div className="space-y-2">
             <p className="text-sm text-slate-300">
-              This will sign this device out and require a new pairing code to use it again. Continue?
+              This will sign you out of this device and you'll need to sign in again to use it.
             </p>
             <div className="flex gap-2">
               <button

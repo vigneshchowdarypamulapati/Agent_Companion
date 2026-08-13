@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { getDevice, unpairDevice } from './devices';
+import { getDevice, unpairDevice, registerBrowserDevice } from './devices';
 import { UnauthorizedError } from './sessions';
 
 describe('devices API', () => {
@@ -56,5 +56,30 @@ describe('devices API', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     await unpairDevice('tok-1');
+  });
+});
+
+describe('registerBrowserDevice', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends the Clerk token as a bearer header and returns the companion credentials', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect((init!.headers as Record<string, string>).authorization).toBe('Bearer clerk-tok-1');
+      return { ok: true, status: 201, json: async () => ({ token: 'tok-1', deviceId: 'dev-1' }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await registerBrowserDevice('clerk-tok-1');
+    expect(result).toEqual({ token: 'tok-1', deviceId: 'dev-1' });
+  });
+
+  it("throws the relay's error message on failure", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 401, json: async () => ({ error: 'Unauthorized' }) }))
+    );
+    await expect(registerBrowserDevice('bad-token')).rejects.toThrow('Unauthorized');
   });
 });
