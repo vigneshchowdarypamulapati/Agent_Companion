@@ -300,6 +300,95 @@ describe('relay server', () => {
     expect(typeof res.body.deviceId).toBe('string');
   });
 
+  it('rate-limits POST /devices/register-browser after 10 registrations by the same Clerk identity, independent of IP', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    // Same Clerk token (same verified identity) every time, so this proves the
+    // account-keyed limiter — not the loose pre-auth IP guard (cap 60) — is
+    // what actually kicks in at 10.
+    for (let i = 0; i < 10; i++) {
+      const res = await request(httpServer)
+        .post('/devices/register-browser')
+        .set('Authorization', `Bearer ${FAKE_CLERK_TOKEN}`)
+        .send({ deviceName: `device-${i}` });
+      expect(res.status).toBe(201);
+    }
+
+    const blocked = await request(httpServer)
+      .post('/devices/register-browser')
+      .set('Authorization', `Bearer ${FAKE_CLERK_TOKEN}`)
+      .send({ deviceName: 'device-11' });
+    expect(blocked.status).toBe(429);
+    expect(blocked.body).toEqual({ error: 'Too many pairing attempts, try again later' });
+
+    // A different Clerk identity is a different account, so it isn't blocked.
+    const other = await request(httpServer)
+      .post('/devices/register-browser')
+      .set('Authorization', `Bearer ${OTHER_FAKE_CLERK_TOKEN}`)
+      .send({ deviceName: 'other-device' });
+    expect(other.status).toBe(201);
+  });
+
+  // --- trust proxy / X-Forwarded-For handling for the IP-keyed request-code limiter ---
+
+  it('with trustProxyHops set, different X-Forwarded-For values get independent /pairing/request-code buckets', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+      trustProxyHops: 1,
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    for (let i = 0; i < 20; i++) {
+      const res = await request(httpServer)
+        .post('/pairing/request-code')
+        .set('X-Forwarded-For', '1.2.3.4')
+        .send({ deviceName: 'x' });
+      expect(res.status).toBe(201);
+    }
+    const blocked = await request(httpServer)
+      .post('/pairing/request-code')
+      .set('X-Forwarded-For', '1.2.3.4')
+      .send({ deviceName: 'x' });
+    expect(blocked.status).toBe(429);
+
+    // A different forwarded client IP is a separate bucket — only possible
+    // if Express is actually honoring X-Forwarded-For for one trusted hop.
+    const otherIp = await request(httpServer)
+      .post('/pairing/request-code')
+      .set('X-Forwarded-For', '5.6.7.8')
+      .send({ deviceName: 'x' });
+    expect(otherIp.status).toBe(201);
+  });
+
+  it('with trustProxyHops unset (default), X-Forwarded-For is ignored and both headers share one bucket', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    for (let i = 0; i < 20; i++) {
+      const res = await request(httpServer)
+        .post('/pairing/request-code')
+        .set('X-Forwarded-For', '1.2.3.4')
+        .send({ deviceName: 'x' });
+      expect(res.status).toBe(201);
+    }
+
+    // A different forwarded-for header does NOT grant a fresh bucket by
+    // default: nothing is trusted, so req.ip is the real socket address
+    // (the same one for every request in this test) regardless of the header.
+    const stillBlocked = await request(httpServer)
+      .post('/pairing/request-code')
+      .set('X-Forwarded-For', '5.6.7.8')
+      .send({ deviceName: 'x' });
+    expect(stillBlocked.status).toBe(429);
+  });
+
   it('returns 404 for an unknown session id when authenticated', async () => {
     httpServer = await createRelayServer({
       store: new InMemoryStore(),

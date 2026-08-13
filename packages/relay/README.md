@@ -56,6 +56,14 @@ Push protocol) to enable push notifications. All three must be set together
 or none take effect — with any missing, the relay runs exactly as it does
 today and `GET /push/vapid-public-key` returns `404`.
 
+Set `COMPANION_RELAY_TRUST_PROXY` to the number of reverse proxies/load
+balancers in front of this relay in your deployment (commonly `1` for a
+single LB, like most PaaS setups). It's optional — unset (or `0`) means
+"trust nothing," the safe default when there's no proxy or the topology is
+unknown — but if it is set, the relay fails fast at startup if the value
+isn't a non-negative integer. See "Rate limits" below for why getting this
+right matters.
+
 ## REST endpoints
 
 - `POST /pairing/request-code` `{ deviceName }` — a daemon requests a
@@ -122,11 +130,34 @@ exists but hasn't stopped yet.
 
 The three account-creating/linking routes are throttled in memory
 (`src/rate-limiter.ts`), returning
-`429 { error: 'Too many pairing attempts, try again later' }` past the cap:
-`/pairing/claim` 10 per 5 minutes per calling device (a 6-digit code is
-otherwise brute-forceable inside its own lifetime), `/pairing/request-code`
-20 per 5 minutes per IP, and `/devices/register-browser` 10 per hour per IP.
+`429 { error: 'Too many pairing attempts, try again later' }` past the cap.
 The counters live in this process, like `PubSub` — see "Current scope" below.
+
+- `/pairing/claim`: 10 per 5 minutes, keyed by the calling device's
+  *account* (`device.userId`), not IP — this route runs post-authentication,
+  so the account is already known, and it's strictly tighter than keying by
+  device (an account can't buy more claim budget by registering extra
+  browser devices). A 6-digit code is otherwise brute-forceable inside its
+  own lifetime.
+- `/devices/register-browser`: two layers. The real control is 10 per hour
+  keyed by the *verified Clerk identity*, checked immediately after Clerk
+  token verification succeeds and before any registration work happens —
+  it never touches `req.ip`, so it's completely independent of proxy
+  topology. In front of that sits a much looser 60-per-5-minutes IP-keyed
+  guard, checked *before* spending a network round-trip on Clerk
+  verification, purely to blunt a flood of garbage tokens — it is not meant
+  to be a precise per-user quota.
+- `/pairing/request-code`: 20 per 5 minutes per IP. There's no identity to
+  key by here — it's how an anonymous daemon bootstraps before any auth
+  exists — so IP is the only signal available, and its accuracy depends
+  entirely on `req.ip` reflecting the real client. Behind any reverse proxy
+  or load balancer, `req.ip` is the proxy's own address unless Express's
+  `trust proxy` setting is configured with the real hop count — set
+  `COMPANION_RELAY_TRUST_PROXY` accordingly before deploying behind one, or
+  this limit (and the register-browser pre-auth guard above) will collapse
+  onto a single shared bucket for every client. It defaults to trusting
+  nothing, which is safe (if overly strict) when there's no proxy or the
+  topology is unknown.
 
 ## WebSocket
 

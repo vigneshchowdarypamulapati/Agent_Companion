@@ -45,6 +45,9 @@ export interface RelayServerOptions {
   identityVerifier: IdentityVerifier;
   pushSender?: PushSender;
   vapidPublicKey?: string;
+  /** Express `trust proxy` hop count — how many reverse proxies/load balancers sit in
+   * front of this relay in the real deployment. Defaults to 0 (trust nothing). */
+  trustProxyHops?: number;
 }
 
 export async function createRelayServer({
@@ -53,6 +56,7 @@ export async function createRelayServer({
   identityVerifier,
   pushSender,
   vapidPublicKey,
+  trustProxyHops,
 }: RelayServerOptions): Promise<Server> {
   const pairing = new PairingService(store);
   const hub = new ConnectionHub(store, pubsub, undefined, undefined, pushSender);
@@ -61,20 +65,33 @@ export async function createRelayServer({
   // A pairing code is 6 digits (10^6) and lives 5 minutes. Unthrottled, that
   // space is brute-forceable inside one code's lifetime by anyone who can sign
   // up (signup is public), and a hit hijacks a stranger's daemon onto the
-  // attacker's account — so /pairing/claim is capped per calling device.
-  // request-code and register-browser are capped per IP simply to keep an
-  // anonymous caller from filling the pairing-code space or the devices table.
-  // Caveat on the two IP-keyed limits: behind a reverse proxy, `req.ip` is the
-  // proxy's address unless Express's `trust proxy` is enabled, which would make
-  // those two caps effectively global. That is deliberately not enabled here —
-  // trusting X-Forwarded-For without knowing the real hop count lets a client
-  // forge its own key, which is strictly worse than a shared bucket. Revisit
-  // together, once there is a known deployment topology to configure it from.
+  // attacker's account. Final design, per route:
+  // - /pairing/claim is keyed by the calling device's *account* (device.userId),
+  //   not IP — it runs post-authentication, so the account is known and this is
+  //   strictly tighter than keying by device (an account can't buy more claim
+  //   budget by registering extra browser devices).
+  // - /devices/register-browser's real control is a limiter keyed by the
+  //   *verified Clerk identity*, checked immediately after
+  //   `identityVerifier.verifyToken()` succeeds and before any registration
+  //   work happens. That limiter doesn't touch `req.ip` at all, so it's
+  //   completely independent of proxy topology. A separate, much looser
+  //   IP-keyed limiter runs pre-auth, purely to blunt a flood of garbage
+  //   tokens before paying for a Clerk round-trip — it is not meant to be a
+  //   precise per-user quota.
+  // - /pairing/request-code has no identity to key by at all (it's how an
+  //   anonymous daemon bootstraps before any auth exists), so IP is the only
+  //   signal available and there's no way around that. Its accuracy behind a
+  //   proxy depends entirely on Express's `trust proxy` being configured to
+  //   the real hop count via COMPANION_RELAY_TRUST_PROXY (see main.ts), which
+  //   defaults to trusting nothing — the safe default when the topology is
+  //   unknown or there is no proxy at all.
   const claimLimiter = new RateLimiter(10, FIVE_MINUTES_MS);
   const requestCodeLimiter = new RateLimiter(20, FIVE_MINUTES_MS);
-  const registerBrowserLimiter = new RateLimiter(10, ONE_HOUR_MS);
+  const registerBrowserPreAuthLimiter = new RateLimiter(60, FIVE_MINUTES_MS);
+  const registerBrowserAccountLimiter = new RateLimiter(10, ONE_HOUR_MS);
 
   const app = express();
+  app.set('trust proxy', trustProxyHops ?? 0);
   app.use(express.json());
 
   app.post(
@@ -98,7 +115,7 @@ export async function createRelayServer({
         res.status(401).json({ error: 'Unauthorized' });
         return;
       }
-      if (!claimLimiter.attempt(device.id)) {
+      if (!claimLimiter.attempt(device.userId)) {
         res.status(429).json({ error: 'Too many pairing attempts, try again later' });
         return;
       }
@@ -136,7 +153,7 @@ export async function createRelayServer({
   app.post(
     '/devices/register-browser',
     asyncHandler(async (req, res) => {
-      if (!registerBrowserLimiter.attempt(req.ip ?? 'unknown')) {
+      if (!registerBrowserPreAuthLimiter.attempt(req.ip ?? 'unknown')) {
         res.status(429).json({ error: 'Too many pairing attempts, try again later' });
         return;
       }
@@ -149,6 +166,10 @@ export async function createRelayServer({
       const identity = await identityVerifier.verifyToken(clerkToken);
       if (!identity) {
         res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      if (!registerBrowserAccountLimiter.attempt(identity.clerkUserId)) {
+        res.status(429).json({ error: 'Too many pairing attempts, try again later' });
         return;
       }
       const { deviceName } = RegisterBrowserRequest.parse(req.body);

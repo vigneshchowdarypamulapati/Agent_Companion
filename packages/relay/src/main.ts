@@ -38,6 +38,20 @@ if (!CLERK_SECRET_KEY) {
   );
 }
 
+let trustProxyHops = 0;
+const trustProxyRaw = process.env.COMPANION_RELAY_TRUST_PROXY;
+if (trustProxyRaw !== undefined) {
+  const parsed = Number(trustProxyRaw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(
+      'COMPANION_RELAY_TRUST_PROXY must be a non-negative integer (the number of reverse ' +
+        'proxies/load balancers in front of this relay) if set at all. Leave it unset if ' +
+        'there is no proxy or the topology is unknown.'
+    );
+  }
+  trustProxyHops = parsed;
+}
+
 const vapidPublicKey = process.env.COMPANION_RELAY_VAPID_PUBLIC_KEY;
 const vapidPrivateKey = process.env.COMPANION_RELAY_VAPID_PRIVATE_KEY;
 const vapidSubject = process.env.COMPANION_RELAY_VAPID_SUBJECT;
@@ -66,6 +80,7 @@ const httpServer = await createRelayServer({
   identityVerifier,
   pushSender,
   vapidPublicKey: pushSender ? vapidPublicKey : undefined,
+  trustProxyHops,
 });
 
 httpServer.listen(PORT, HOST, () => {
