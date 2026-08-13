@@ -9,33 +9,57 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
+export type ClaimResult = 'ok' | 'not_found' | 'expired' | 'already_claimed' | 'daemon_exists';
+export type PollResult =
+  | { status: 'pending' }
+  | { status: 'expired' }
+  | { status: 'complete'; token: string; deviceId: string };
+
 export class PairingService {
   constructor(private store: Store) {}
 
-  async requestPairingCode(): Promise<{ code: string; expiresAt: number }> {
-    const user = await this.store.getOrCreateDefaultUser();
-    const pairing = await this.store.createPairingCode(user.id);
-    return { code: pairing.code, expiresAt: pairing.expiresAt };
+  async requestPairingCode(deviceName: string): Promise<{ code: string; deviceCode: string; expiresAt: number }> {
+    const pairing = await this.store.createPairingCode(deviceName);
+    return { code: pairing.code, deviceCode: pairing.deviceCode, expiresAt: pairing.expiresAt };
   }
 
-  async redeemPairingCode(
-    code: string,
-    deviceType: 'daemon' | 'browser',
-    deviceName: string
-  ): Promise<{ token: string; device: Device } | undefined> {
-    const pairing = await this.store.consumePairingCode(code);
-    if (!pairing) return undefined;
-    const token = generateToken();
-    const device = await this.store.createDevice({
-      userId: pairing.userId,
-      type: deviceType,
-      name: deviceName,
-      tokenHash: hashToken(token),
-    });
-    return { token, device };
+  /** Called by an already-paired browser to link a daemon's pending pairing code to its account. */
+  async claimPairingCode(code: string, userId: string): Promise<ClaimResult> {
+    const existingDaemon = await this.store.getDaemonDeviceForUser(userId);
+    if (existingDaemon) return 'daemon_exists';
+    return this.store.claimPairingCode(code, userId);
+  }
+
+  /** Called by the daemon that requested the code, until a browser claims it. */
+  async pollPairingCode(deviceCode: string): Promise<PollResult> {
+    const pairing = await this.store.getPairingCodeByDeviceCode(deviceCode);
+    if (!pairing || pairing.redeemed || pairing.expiresAt < Date.now()) {
+      return { status: 'expired' };
+    }
+    if (!pairing.userId) {
+      return { status: 'pending' };
+    }
+    const { token, device } = await this.mintDeviceToken(pairing.userId, 'daemon', pairing.deviceName);
+    await this.store.markPairingCodeRedeemed(deviceCode);
+    return { status: 'complete', token, deviceId: device.id };
+  }
+
+  /** Called once per browser, immediately after Clerk verification succeeds. */
+  async registerBrowserDevice(userId: string, deviceName: string): Promise<{ token: string; device: Device }> {
+    return this.mintDeviceToken(userId, 'browser', deviceName);
   }
 
   async verifyToken(token: string): Promise<Device | undefined> {
     return this.store.getDeviceByTokenHash(hashToken(token));
+  }
+
+  private async mintDeviceToken(
+    userId: string,
+    type: 'daemon' | 'browser',
+    name: string
+  ): Promise<{ token: string; device: Device }> {
+    const token = generateToken();
+    const device = await this.store.createDevice({ userId, type, name, tokenHash: hashToken(token) });
+    return { token, device };
   }
 }
