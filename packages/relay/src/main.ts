@@ -4,6 +4,7 @@ import { WebPushSender } from './web-push-sender.js';
 import { createDbClient } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { PostgresStore } from './postgres-store.js';
+import { ClerkIdentityVerifier } from './identity-verifier.js';
 
 // .env isn't checked in (it holds a real Neon connection string). Loading
 // it here means `node dist/main.js` and `npm start` both just work locally
@@ -29,6 +30,14 @@ if (!DATABASE_URL) {
   );
 }
 
+const CLERK_SECRET_KEY = process.env.CLERK_SECRET_KEY;
+if (!CLERK_SECRET_KEY) {
+  throw new Error(
+    'CLERK_SECRET_KEY is required — set it to your Clerk application\'s secret key. ' +
+      'See packages/relay/.env.example for local development.'
+  );
+}
+
 const vapidPublicKey = process.env.COMPANION_RELAY_VAPID_PUBLIC_KEY;
 const vapidPrivateKey = process.env.COMPANION_RELAY_VAPID_PRIVATE_KEY;
 const vapidSubject = process.env.COMPANION_RELAY_VAPID_SUBJECT;
@@ -50,9 +59,11 @@ await runMigrations(db);
 
 const store = new PostgresStore(db);
 const pubsub = new InMemoryPubSub();
+const identityVerifier = new ClerkIdentityVerifier(CLERK_SECRET_KEY);
 const httpServer = await createRelayServer({
   store,
   pubsub,
+  identityVerifier,
   pushSender,
   vapidPublicKey: pushSender ? vapidPublicKey : undefined,
 });
