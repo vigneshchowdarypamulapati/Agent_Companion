@@ -11,6 +11,7 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@clerk/backend": "^2.16.5",
     "@companion/protocol": "*",
     "drizzle-orm": "^0.45.2",
     "express": "^4.21.0",
