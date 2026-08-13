@@ -22,12 +22,10 @@ const defaultFetch: FetchLike = (url, init) => fetch(url, init);
 
 /**
  * Returns this daemon's device credentials, reading them from `tokenPath` if
- * present. On first run (no token file yet), self-pairs against the relay:
- * `/pairing/request-code` is intentionally unauthenticated in v1 — it
- * bootstraps the very first device for the single seeded user (see
- * packages/relay/README.md) — so the daemon can mint its own device token
- * with no human pairing step. Later devices (the web app) pair using a code
- * generated from an already-authenticated session instead.
+ * present. On first run (no token file yet), requests a pairing code from
+ * the relay, prints it for a human to enter in their already-authenticated
+ * Companion web app, then polls until that claim completes and the relay
+ * mints this daemon's device token.
  */
 export async function getOrCreateDeviceToken(options: DeviceAuthOptions): Promise<DeviceCredentials> {
   const existing = await readExisting(options.tokenPath);
@@ -54,6 +52,8 @@ async function readExisting(tokenPath: string): Promise<DeviceCredentials | unde
   return { token: parsed.token, deviceId: parsed.deviceId };
 }
 
+export const POLL_INTERVAL_MS = 2000;
+
 async function pairNewDevice(
   relayHttpUrl: string,
   deviceName: string,
@@ -62,22 +62,58 @@ async function pairNewDevice(
   // Strip a trailing slash the same way relay-client.ts does, so a
   // COMPANION_RELAY_URL like `ws://host:8787/` cannot produce `...//request-code`.
   const base = relayHttpUrl.replace(/\/$/, '');
-  const codeRes = await fetchFn(`${base}/pairing/request-code`, { method: 'POST' });
+  const codeRes = await fetchFn(`${base}/pairing/request-code`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ deviceName }),
+  });
   if (!codeRes.ok) {
     throw new Error(`Failed to request a pairing code from the relay: HTTP ${codeRes.status}`);
   }
-  const { code } = (await codeRes.json()) as { code: string };
+  const { code, deviceCode, expiresAt } = (await codeRes.json()) as {
+    code: string;
+    deviceCode: string;
+    expiresAt: number;
+  };
 
-  const redeemRes = await fetchFn(`${base}/pairing/redeem`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ code, deviceType: 'daemon', deviceName }),
-  });
-  if (!redeemRes.ok) {
-    throw new Error(`Failed to redeem pairing code with the relay: HTTP ${redeemRes.status}`);
+  console.log(`Pairing code: ${code}`);
+  console.log('Enter this code in the Companion web app to link this daemon to your account.');
+
+  return pollForToken(base, deviceCode, expiresAt, fetchFn);
+}
+
+async function pollForToken(
+  base: string,
+  deviceCode: string,
+  expiresAt: number,
+  fetchFn: FetchLike
+): Promise<DeviceCredentials> {
+  while (Date.now() < expiresAt) {
+    const pollRes = await fetchFn(`${base}/pairing/poll`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deviceCode }),
+    });
+    if (!pollRes.ok) {
+      throw new Error(`Failed to poll pairing status: HTTP ${pollRes.status}`);
+    }
+    const result = (await pollRes.json()) as
+      | { status: 'pending' }
+      | { status: 'expired' }
+      | { status: 'complete'; token: string; deviceId: string };
+    if (result.status === 'complete') {
+      return { token: result.token, deviceId: result.deviceId };
+    }
+    if (result.status === 'expired') {
+      throw new Error('Pairing code expired before it was claimed');
+    }
+    await sleep(POLL_INTERVAL_MS);
   }
-  const { token, deviceId } = (await redeemRes.json()) as { token: string; deviceId: string };
-  return { token, deviceId };
+  throw new Error('Pairing code expired before it was claimed');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function persist(tokenPath: string, credentials: DeviceCredentials): Promise<void> {

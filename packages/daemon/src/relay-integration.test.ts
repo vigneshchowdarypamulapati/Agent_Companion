@@ -3,16 +3,28 @@ import request from 'supertest';
 import { WebSocket } from 'ws';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
-import { createRelayServer, InMemoryStore, InMemoryPubSub } from '@companion/relay';
+import { createRelayServer, InMemoryStore, InMemoryPubSub, FakeIdentityVerifier } from '@companion/relay';
 import { RelayClient } from './relay-client.js';
 import type { Command, SessionEvent } from '@companion/protocol';
 
-async function pair(httpServer: Server, deviceType: 'daemon' | 'browser', deviceName: string): Promise<string> {
-  const codeRes = await request(httpServer).post('/pairing/request-code').send();
-  const redeemRes = await request(httpServer)
-    .post('/pairing/redeem')
-    .send({ code: codeRes.body.code, deviceType, deviceName });
-  return redeemRes.body.token as string;
+const FAKE_CLERK_TOKEN = 'fake-clerk-token';
+
+async function registerBrowser(httpServer: Server, deviceName: string): Promise<string> {
+  const res = await request(httpServer)
+    .post('/devices/register-browser')
+    .set('Authorization', `Bearer ${FAKE_CLERK_TOKEN}`)
+    .send({ deviceName });
+  return res.body.token as string;
+}
+
+async function pairDaemon(httpServer: Server, browserToken: string, deviceName: string): Promise<string> {
+  const codeRes = await request(httpServer).post('/pairing/request-code').send({ deviceName });
+  await request(httpServer)
+    .post('/pairing/claim')
+    .set('Authorization', `Bearer ${browserToken}`)
+    .send({ code: codeRes.body.code });
+  const pollRes = await request(httpServer).post('/pairing/poll').send({ deviceCode: codeRes.body.deviceCode });
+  return pollRes.body.token as string;
 }
 
 function waitForMessage(ws: WebSocket): Promise<any> {
@@ -33,12 +45,18 @@ describe('daemon <-> relay integration', () => {
   });
 
   it('forwards a daemon-emitted event to a connected browser, and a browser command back to the daemon', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: new FakeIdentityVerifier(
+        new Map([[FAKE_CLERK_TOKEN, { clerkUserId: 'clerk-user-1', email: 'test@example.com' }]])
+      ),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
-    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
-    const browserToken = await pair(httpServer, 'browser', 'phone');
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
 
     const receivedCommands: Command[] = [];
     const daemonOpened = new Promise<void>((resolve) => {
