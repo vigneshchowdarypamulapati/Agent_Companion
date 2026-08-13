@@ -77,7 +77,8 @@ async function pairNewDevice(
   };
 
   console.log(`Pairing code: ${code}`);
-  console.log('Enter this code in the Companion web app to link this daemon to your account.');
+  console.log('Open the Companion web app, go to Settings, and enter this code under "Pair a daemon"');
+  console.log('to link this daemon to your account.');
 
   return pollForToken(base, deviceCode, expiresAt, fetchFn);
 }
@@ -89,18 +90,42 @@ async function pollForToken(
   fetchFn: FetchLike
 ): Promise<DeviceCredentials> {
   while (Date.now() < expiresAt) {
-    const pollRes = await fetchFn(`${base}/pairing/poll`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ deviceCode }),
-    });
-    if (!pollRes.ok) {
-      throw new Error(`Failed to poll pairing status: HTTP ${pollRes.status}`);
+    // A relay hiccup (5xx, dropped connection, DNS blip) during a multi-minute
+    // window a human is standing in front of must not abort the whole pairing
+    // attempt — those are retried exactly like a `pending` result, still bounded
+    // by the same expiresAt deadline. A 4xx is different: it means this daemon is
+    // asking wrongly, which retrying cannot fix, so it still throws immediately.
+    let pollRes: Awaited<ReturnType<FetchLike>>;
+    try {
+      pollRes = await fetchFn(`${base}/pairing/poll`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceCode }),
+      });
+    } catch {
+      // Network-level failure: relay restarting, connection reset, DNS blip.
+      await sleep(POLL_INTERVAL_MS);
+      continue;
     }
-    const result = (await pollRes.json()) as
+    if (!pollRes.ok) {
+      if (pollRes.status < 500) {
+        throw new Error(`Failed to poll pairing status: HTTP ${pollRes.status}`);
+      }
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
+    let result:
       | { status: 'pending' }
       | { status: 'expired' }
       | { status: 'complete'; token: string; deviceId: string };
+    try {
+      result = (await pollRes.json()) as typeof result;
+    } catch {
+      // A 200 whose body isn't JSON (a proxy's error page, a truncated
+      // response) is the same class of blip as the two above.
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
     if (result.status === 'complete') {
       return { token: result.token, deviceId: result.deviceId };
     }

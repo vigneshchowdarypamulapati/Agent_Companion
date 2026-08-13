@@ -4,6 +4,39 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getOrCreateDeviceToken, POLL_INTERVAL_MS, type FetchLike } from './device-auth.js';
 
+/**
+ * Drives the fake clock until `promise` settles, then returns it.
+ *
+ * getOrCreateDeviceToken's first step (readExisting) does a real, unfaked
+ * fs.readFile before pollForToken ever registers its first setTimeout. A single
+ * up-front advanceTimersByTimeAsync can therefore finish fast-forwarding the
+ * virtual clock before that setTimeout exists to be advanced, and the loop then
+ * hangs forever waiting on a timer that will never fire. Yielding to the *real*
+ * event loop between one-interval advances removes that ordering assumption
+ * entirely, instead of guessing at a fixed number of setImmediate turns.
+ */
+async function drivePolling<T>(promise: Promise<T>, maxIntervals = 20): Promise<T> {
+  let settled = false;
+  const tracked = promise.then(
+    (value) => {
+      settled = true;
+      return value;
+    },
+    (err) => {
+      settled = true;
+      throw err;
+    }
+  );
+  // Swallow here only so an early rejection isn't an unhandled rejection while
+  // the loop below is still running; `tracked` is what the caller awaits.
+  tracked.catch(() => {});
+  for (let i = 0; i < maxIntervals && !settled; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+  }
+  return tracked;
+}
+
 describe('getOrCreateDeviceToken', () => {
   let dir: string;
 
@@ -67,25 +100,96 @@ describe('getOrCreateDeviceToken', () => {
       return { ok: true, status: 200, json: async () => ({ status: 'complete', token: 'secret-token', deviceId: 'device-1' }) };
     };
 
-    const promise = getOrCreateDeviceToken({
-      relayHttpUrl: 'http://x',
-      deviceName: 'laptop',
-      tokenPath,
-      fetchFn,
-    });
-    // getOrCreateDeviceToken's first step (readExisting) does a real,
-    // unfaked fs.readFile before pollForToken ever registers its first
-    // setTimeout. Without yielding to the real event loop first,
-    // advanceTimersByTimeAsync can finish fast-forwarding the virtual clock
-    // before that setTimeout exists to be advanced, and the loop then hangs
-    // forever waiting on a timer that will never fire. Two real setImmediate
-    // turns are enough to let the real I/O settle first.
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
-    await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS * 3);
+    const promise = drivePolling(
+      getOrCreateDeviceToken({
+        relayHttpUrl: 'http://x',
+        deviceName: 'laptop',
+        tokenPath,
+        fetchFn,
+      })
+    );
 
     expect(await promise).toEqual({ token: 'secret-token', deviceId: 'device-1' });
     expect(pollCount).toBe(3);
+  });
+
+  it('retries after a network error and a 503, instead of aborting the pairing attempt', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    dir = await mkdtemp(join(tmpdir(), 'companion-device-'));
+    const tokenPath = join(dir, 'device.json');
+    let pollCount = 0;
+    const fetchFn: FetchLike = async (url) => {
+      if (url.endsWith('/pairing/request-code')) {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ code: '123456', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
+        };
+      }
+      pollCount++;
+      if (pollCount === 1) throw new Error('ECONNRESET');
+      if (pollCount === 2) return { ok: false, status: 503, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ status: 'complete', token: 'secret-token', deviceId: 'device-1' }) };
+    };
+
+    const promise = drivePolling(
+      getOrCreateDeviceToken({
+        relayHttpUrl: 'http://x',
+        deviceName: 'laptop',
+        tokenPath,
+        fetchFn,
+      })
+    );
+
+    expect(await promise).toEqual({ token: 'secret-token', deviceId: 'device-1' });
+    expect(pollCount).toBe(3);
+  });
+
+  it('throws immediately on a 4xx poll response, which retrying cannot fix', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'companion-device-'));
+    const tokenPath = join(dir, 'device.json');
+    const fetchFn: FetchLike = async (url) => {
+      if (url.endsWith('/pairing/request-code')) {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ code: '123456', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
+        };
+      }
+      return { ok: false, status: 400, json: async () => ({}) };
+    };
+
+    await expect(
+      getOrCreateDeviceToken({ relayHttpUrl: 'http://x', deviceName: 'laptop', tokenPath, fetchFn })
+    ).rejects.toThrow('Failed to poll pairing status: HTTP 400');
+  });
+
+  it('gives up at the original deadline even while transient failures continue', async () => {
+    // Date is faked here too (unlike the tests above) so the loop's own
+    // `Date.now() < expiresAt` deadline advances with the virtual clock —
+    // otherwise an endlessly-retrying poll would need real seconds to expire.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    dir = await mkdtemp(join(tmpdir(), 'companion-device-'));
+    const tokenPath = join(dir, 'device.json');
+    let pollCount = 0;
+    const fetchFn: FetchLike = async (url) => {
+      if (url.endsWith('/pairing/request-code')) {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ code: '123456', deviceCode: 'devcode-1', expiresAt: Date.now() + 5000 }),
+        };
+      }
+      pollCount++;
+      throw new Error('ECONNRESET');
+    };
+
+    await expect(
+      drivePolling(getOrCreateDeviceToken({ relayHttpUrl: 'http://x', deviceName: 'laptop', tokenPath, fetchFn }))
+    ).rejects.toThrow('Pairing code expired');
+    // Retried, rather than aborting on the first blip — but bounded.
+    expect(pollCount).toBeGreaterThan(1);
+    expect(pollCount).toBeLessThan(5);
   });
 
   it('throws when the pairing code expires before being claimed', async () => {
