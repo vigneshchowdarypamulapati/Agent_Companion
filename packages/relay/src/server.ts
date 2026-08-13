@@ -1,10 +1,18 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer } from 'ws';
-import { RelayMessage, RedeemPairingRequest, PushSubscriptionPayload } from '@companion/protocol';
+import {
+  RelayMessage,
+  RequestPairingCodeRequest,
+  ClaimPairingRequest,
+  PollPairingRequest,
+  RegisterBrowserRequest,
+  PushSubscriptionPayload,
+} from '@companion/protocol';
 import { ZodError } from 'zod';
 import type { Device, Store } from './store.js';
 import type { PubSub } from './pubsub.js';
+import type { IdentityVerifier } from './identity-verifier.js';
 import { PairingService } from './pairing.js';
 import { ConnectionHub, type Connection } from './hub.js';
 import type { PushSender } from './push-sender.js';
@@ -30,11 +38,18 @@ async function authenticate(req: Request, pairing: PairingService): Promise<Devi
 export interface RelayServerOptions {
   store: Store;
   pubsub: PubSub;
+  identityVerifier: IdentityVerifier;
   pushSender?: PushSender;
   vapidPublicKey?: string;
 }
 
-export async function createRelayServer({ store, pubsub, pushSender, vapidPublicKey }: RelayServerOptions): Promise<Server> {
+export async function createRelayServer({
+  store,
+  pubsub,
+  identityVerifier,
+  pushSender,
+  vapidPublicKey,
+}: RelayServerOptions): Promise<Server> {
   const pairing = new PairingService(store);
   const hub = new ConnectionHub(store, pubsub, undefined, undefined, pushSender);
   await hub.start();
@@ -44,21 +59,69 @@ export async function createRelayServer({ store, pubsub, pushSender, vapidPublic
 
   app.post(
     '/pairing/request-code',
-    asyncHandler(async (_req, res) => {
-      const result = await pairing.requestPairingCode();
+    asyncHandler(async (req, res) => {
+      const { deviceName } = RequestPairingCodeRequest.parse(req.body);
+      const result = await pairing.requestPairingCode(deviceName);
       res.status(201).json(result);
     })
   );
 
   app.post(
-    '/pairing/redeem',
+    '/pairing/claim',
     asyncHandler(async (req, res) => {
-      const { code, deviceType, deviceName } = RedeemPairingRequest.parse(req.body);
-      const result = await pairing.redeemPairingCode(code, deviceType, deviceName);
-      if (!result) {
-        res.status(400).json({ error: 'Invalid or expired pairing code' });
+      const device = await authenticate(req, pairing);
+      if (!device) {
+        res.status(401).json({ error: 'Unauthorized' });
         return;
       }
+      const { code } = ClaimPairingRequest.parse(req.body);
+      const result = await pairing.claimPairingCode(code, device.userId);
+      if (result === 'not_found') {
+        res.status(404).json({ error: 'Invalid pairing code' });
+        return;
+      }
+      if (result === 'expired') {
+        res.status(410).json({ error: 'Pairing code expired' });
+        return;
+      }
+      if (result === 'already_claimed') {
+        res.status(409).json({ error: 'Pairing code already claimed' });
+        return;
+      }
+      if (result === 'daemon_exists') {
+        res.status(409).json({ error: 'Account already has a paired daemon — unpair it first' });
+        return;
+      }
+      res.status(200).json({ ok: true });
+    })
+  );
+
+  app.post(
+    '/pairing/poll',
+    asyncHandler(async (req, res) => {
+      const { deviceCode } = PollPairingRequest.parse(req.body);
+      const result = await pairing.pollPairingCode(deviceCode);
+      res.status(200).json(result);
+    })
+  );
+
+  app.post(
+    '/devices/register-browser',
+    asyncHandler(async (req, res) => {
+      const header = req.header('authorization');
+      const [scheme, clerkToken] = header?.split(' ') ?? [];
+      if (!clerkToken || scheme.toLowerCase() !== 'bearer') {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      const identity = await identityVerifier.verifyToken(clerkToken);
+      if (!identity) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      const { deviceName } = RegisterBrowserRequest.parse(req.body);
+      const user = await store.getOrCreateUserByClerkId(identity.clerkUserId, identity.email);
+      const result = await pairing.registerBrowserDevice(user.id, deviceName);
       res.status(201).json({ token: result.token, deviceId: result.device.id });
     })
   );

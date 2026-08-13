@@ -49,10 +49,21 @@ today and `GET /push/vapid-public-key` returns `404`.
 
 ## REST endpoints
 
-- `POST /pairing/request-code` — issue a 6-digit, 5-minute, single-use
-  pairing code for the (single, v1) default user.
-- `POST /pairing/redeem` `{ code, deviceType, deviceName }` — exchange a
-  pairing code for a long-lived device token.
+- `POST /pairing/request-code` `{ deviceName }` — a daemon requests a
+  6-digit, 5-minute, single-use pairing code, plus a private `deviceCode`
+  it uses to poll for completion. The code is not yet linked to any
+  account.
+- `POST /pairing/claim` `{ code }` — an already-authenticated browser
+  device links a pending pairing code to its own account. `409` if that
+  account already has a paired daemon device.
+- `POST /pairing/poll` `{ deviceCode }` — the daemon that requested the
+  code polls this until a browser claims it, then receives its device
+  token. Always `200`, with `{ status: 'pending' | 'expired' }` or
+  `{ status: 'complete', token, deviceId }`.
+- `POST /devices/register-browser` `{ deviceName }`, authenticated with a
+  Clerk session token (not a device token) — exchanges Clerk identity for
+  this browser's own long-lived companion device token. Called once per
+  browser, the first time it signs in.
 - `GET /devices/me` — the calling device's own `{ id, type, name, createdAt }`
   (never includes `tokenHash` or `userId`).
 - `POST /devices/unpair` — revokes the calling device's token so it can
@@ -119,8 +130,8 @@ a `{kind:'error', message}` diagnostic frame — this is not part of the
   port interfaces (`store.ts`, `pubsub.ts`) specifically so a real
   Redis-backed `PubSub` can be swapped in later without touching `hub.ts`,
   `pairing.ts`, or `server.ts`.
-- A single seeded default user; pairing-code requests are unauthenticated
-  (bootstraps the first device). Public multi-user signup is future work.
+- Real per-account isolation via Clerk — see
+  `docs/superpowers/specs/2026-08-11-multi-user-hosting-design.md`.
 - Routing a `start_session` command through the relay (remotely starting a
   brand-new session) is not implemented — only commands on an
   already-started session (`inject_prompt`, `respond_to_permission`,

@@ -8,6 +8,7 @@ import type { Server } from 'node:http';
 import { createRelayServer } from './server.js';
 import { InMemoryStore } from './in-memory-store.js';
 import { InMemoryPubSub } from './in-memory-pubsub.js';
+import { FakeIdentityVerifier } from './identity-verifier.js';
 import type { PushSender } from './push-sender.js';
 
 function waitForMessage(ws: WebSocket): Promise<any> {
@@ -23,13 +24,32 @@ function waitForOpen(ws: WebSocket): Promise<void> {
   });
 }
 
-/** Runs the full pairing handshake and returns the device token. */
-async function pair(httpServer: Server, deviceType: 'daemon' | 'browser', deviceName: string): Promise<string> {
-  const codeRes = await request(httpServer).post('/pairing/request-code').send();
-  const redeemRes = await request(httpServer)
-    .post('/pairing/redeem')
-    .send({ code: codeRes.body.code, deviceType, deviceName });
-  return redeemRes.body.token as string;
+const FAKE_CLERK_TOKEN = 'fake-clerk-token';
+
+function makeIdentityVerifier(): FakeIdentityVerifier {
+  return new FakeIdentityVerifier(
+    new Map([[FAKE_CLERK_TOKEN, { clerkUserId: 'clerk-user-1', email: 'test@example.com' }]])
+  );
+}
+
+/** Registers a browser device via the Clerk-authenticated registration route. */
+async function registerBrowser(httpServer: Server, deviceName: string): Promise<string> {
+  const res = await request(httpServer)
+    .post('/devices/register-browser')
+    .set('Authorization', `Bearer ${FAKE_CLERK_TOKEN}`)
+    .send({ deviceName });
+  return res.body.token as string;
+}
+
+/** Runs the daemon pairing handshake (request-code -> claim by browserToken -> poll) and returns the daemon's token. */
+async function pairDaemon(httpServer: Server, browserToken: string, deviceName: string): Promise<string> {
+  const codeRes = await request(httpServer).post('/pairing/request-code').send({ deviceName });
+  await request(httpServer)
+    .post('/pairing/claim')
+    .set('Authorization', `Bearer ${browserToken}`)
+    .send({ code: codeRes.body.code });
+  const pollRes = await request(httpServer).post('/pairing/poll').send({ deviceCode: codeRes.body.deviceCode });
+  return pollRes.body.token as string;
 }
 
 describe('relay server', () => {
@@ -45,12 +65,12 @@ describe('relay server', () => {
   it('pairs a daemon and a browser, then routes an event and a command between them', async () => {
     const store = new InMemoryStore();
     const pubsub = new InMemoryPubSub();
-    httpServer = await createRelayServer({ store, pubsub });
+    httpServer = await createRelayServer({ store, pubsub, identityVerifier: makeIdentityVerifier() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
-    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
-    const browserToken = await pair(httpServer, 'browser', 'phone');
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
 
     const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
     const browserWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${browserToken}`);
@@ -96,7 +116,11 @@ describe('relay server', () => {
   });
 
   it('rejects a WS connection with an invalid token', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
@@ -106,19 +130,31 @@ describe('relay server', () => {
     expect(closeCode).toBe(4401);
   });
 
-  it('returns 400 for an invalid pairing redeem request', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+  it('returns 400 for a malformed /pairing/claim request body', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
-    const res = await request(httpServer).post('/pairing/redeem').send({ code: '000000' });
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const res = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({});
     expect(res.status).toBe(400);
   });
 
   it('returns 404 for an unknown session id when authenticated', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
-    const token = await pair(httpServer, 'browser', 'phone');
+    const token = await registerBrowser(httpServer, 'phone');
     const res = await request(httpServer).get('/sessions/does-not-exist').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(404);
   });
@@ -133,7 +169,7 @@ describe('relay server', () => {
       throw new Error('Store connection failed');
     };
 
-    httpServer = await createRelayServer({ store: throwingStore, pubsub });
+    httpServer = await createRelayServer({ store: throwingStore, pubsub, identityVerifier: makeIdentityVerifier() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
@@ -146,7 +182,7 @@ describe('relay server', () => {
     expect(closeCode).toBe(1011);
 
     // Verify the relay is still responsive by making an HTTP request.
-    const res = await request(httpServer).post('/pairing/request-code').send();
+    const res = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'x' });
     expect(res.status).toBe(201);
   });
 
@@ -156,7 +192,11 @@ describe('relay server', () => {
   const MALFORMED_FRAME = Buffer.from([0xc1, 0x80, 0x00, 0x00, 0x00, 0x00]);
 
   it('survives a malformed WebSocket frame instead of crashing the process', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
@@ -168,7 +208,8 @@ describe('relay server', () => {
     (anonWs as unknown as { _socket: Socket })._socket.write(MALFORMED_FRAME);
 
     // And the same frame on a fully established, authenticated connection.
-    const token = await pair(httpServer, 'daemon', 'laptop');
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const token = await pairDaemon(httpServer, browserToken, 'laptop');
     const authedWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
     sockets.push(authedWs);
     authedWs.on('error', () => {});
@@ -177,14 +218,18 @@ describe('relay server', () => {
     await new Promise<void>((resolve) => authedWs.once('close', () => resolve()));
 
     // The process must still be alive and serving.
-    const res = await request(httpServer).post('/pairing/request-code').send();
+    const res = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'x' });
     expect(res.status).toBe(201);
   });
 
   // --- C3: REST session routes require authentication and ownership ---
 
   it('returns 401 for GET /sessions/:id and /events without an Authorization header', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
     expect((await request(httpServer).get('/sessions/sess-1')).status).toBe(401);
@@ -192,7 +237,11 @@ describe('relay server', () => {
   });
 
   it('returns 401 for a malformed or unknown bearer token', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
     expect((await request(httpServer).get('/sessions/sess-1').set('Authorization', 'nonsense')).status).toBe(401);
@@ -203,11 +252,12 @@ describe('relay server', () => {
 
   it("returns 404 (not 403) when a device from another user asks for a session it doesn't own", async () => {
     const store = new InMemoryStore();
-    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
-    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
     const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
     sockets.push(daemonWs);
     await waitForOpen(daemonWs);
@@ -248,11 +298,15 @@ describe('relay server', () => {
   // --- diagnostic error frame instead of silent drop ---
 
   it('replies with a diagnostic error frame when a routed message is rejected', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
-    const browserToken = await pair(httpServer, 'browser', 'phone');
+    const browserToken = await registerBrowser(httpServer, 'phone');
     const browserWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${browserToken}`);
     sockets.push(browserWs);
     await waitForOpen(browserWs);
@@ -272,12 +326,12 @@ describe('relay server', () => {
 
   it("returns the authenticated device's active sessions", async () => {
     const store = new InMemoryStore();
-    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
-    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
-    const browserToken = await pair(httpServer, 'browser', 'phone');
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
 
     const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
     sockets.push(daemonWs);
@@ -301,17 +355,25 @@ describe('relay server', () => {
   });
 
   it('returns an empty array when there is no active session', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
-    const token = await pair(httpServer, 'browser', 'phone');
+    const token = await registerBrowser(httpServer, 'phone');
     const res = await request(httpServer).get('/sessions/active').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
   });
 
   it('returns 401 for GET /sessions/active without an Authorization header', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
     const res = await request(httpServer).get('/sessions/active');
@@ -322,12 +384,12 @@ describe('relay server', () => {
 
   it('dismisses a stopped session and removes it from the active list', async () => {
     const store = new InMemoryStore();
-    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
-    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
-    const browserToken = await pair(httpServer, 'browser', 'phone');
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
 
     const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
     sockets.push(daemonWs);
@@ -369,12 +431,12 @@ describe('relay server', () => {
 
   it('returns 409 when dismissing a session that is not stopped', async () => {
     const store = new InMemoryStore();
-    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
-    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
-    const browserToken = await pair(httpServer, 'browser', 'phone');
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
 
     const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
     sockets.push(daemonWs);
@@ -398,10 +460,14 @@ describe('relay server', () => {
   });
 
   it('returns 404 when dismissing an unknown session', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
-    const token = await pair(httpServer, 'browser', 'phone');
+    const token = await registerBrowser(httpServer, 'phone');
     const res = await request(httpServer)
       .post('/sessions/does-not-exist/dismiss')
       .set('Authorization', `Bearer ${token}`);
@@ -409,7 +475,11 @@ describe('relay server', () => {
   });
 
   it('returns 401 for POST /sessions/:id/dismiss without an Authorization header', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
     const res = await request(httpServer).post('/sessions/sess-1/dismiss');
@@ -419,10 +489,14 @@ describe('relay server', () => {
   // --- GET /devices/me ---
 
   it("returns the authenticated device's own info", async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
-    const token = await pair(httpServer, 'browser', 'phone');
+    const token = await registerBrowser(httpServer, 'phone');
     const res = await request(httpServer).get('/devices/me').set('Authorization', `Bearer ${token}`);
 
     expect(res.status).toBe(200);
@@ -434,7 +508,11 @@ describe('relay server', () => {
   });
 
   it('returns 401 for GET /devices/me without an Authorization header', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
     const res = await request(httpServer).get('/devices/me');
@@ -444,10 +522,14 @@ describe('relay server', () => {
   // --- POST /devices/unpair ---
 
   it('unpairs the device: the endpoint succeeds and the token stops authenticating', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
-    const token = await pair(httpServer, 'browser', 'phone');
+    const token = await registerBrowser(httpServer, 'phone');
 
     const unpairRes = await request(httpServer).post('/devices/unpair').set('Authorization', `Bearer ${token}`);
     expect(unpairRes.status).toBe(200);
@@ -458,7 +540,11 @@ describe('relay server', () => {
   });
 
   it('returns 401 for POST /devices/unpair without an Authorization header', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
     const res = await request(httpServer).post('/devices/unpair');
@@ -466,11 +552,15 @@ describe('relay server', () => {
   });
 
   it('force-closes every other live connection authenticated as the unpaired device', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
-    const token = await pair(httpServer, 'browser', 'phone');
+    const token = await registerBrowser(httpServer, 'phone');
 
     // Two tabs sharing the same paired browser's token.
     const tabA = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
@@ -491,7 +581,11 @@ describe('relay server', () => {
   // --- push notifications ---
 
   it('returns 404 for GET /push/vapid-public-key when push is not configured', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
     const res = await request(httpServer).get('/push/vapid-public-key');
@@ -502,6 +596,7 @@ describe('relay server', () => {
     httpServer = await createRelayServer({
       store: new InMemoryStore(),
       pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
       vapidPublicKey: 'test-public-key',
     });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
@@ -512,7 +607,11 @@ describe('relay server', () => {
   });
 
   it('returns 401 for POST /devices/push-subscription without an Authorization header', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
     const res = await request(httpServer)
@@ -522,10 +621,14 @@ describe('relay server', () => {
   });
 
   it('returns 400 for POST /devices/push-subscription with an invalid subscription body', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
-    const token = await pair(httpServer, 'browser', 'phone');
+    const token = await registerBrowser(httpServer, 'phone');
     const res = await request(httpServer)
       .post('/devices/push-subscription')
       .set('Authorization', `Bearer ${token}`)
@@ -542,12 +645,17 @@ describe('relay server', () => {
         return 'ok';
       },
     };
-    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), pushSender });
+    httpServer = await createRelayServer({
+      store,
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+      pushSender,
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     const port = (httpServer.address() as AddressInfo).port;
 
-    const daemonToken = await pair(httpServer, 'daemon', 'laptop');
-    const browserToken = await pair(httpServer, 'browser', 'phone');
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
 
     const subscribeRes = await request(httpServer)
       .post('/devices/push-subscription')
@@ -583,10 +691,14 @@ describe('relay server', () => {
   });
 
   it('clears the subscription after DELETE /devices/push-subscription', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
-    const token = await pair(httpServer, 'browser', 'phone');
+    const token = await registerBrowser(httpServer, 'phone');
     await request(httpServer)
       .post('/devices/push-subscription')
       .set('Authorization', `Bearer ${token}`)
@@ -600,7 +712,11 @@ describe('relay server', () => {
   });
 
   it('returns 401 for DELETE /devices/push-subscription without an Authorization header', async () => {
-    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub() });
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
     const res = await request(httpServer).delete('/devices/push-subscription');
