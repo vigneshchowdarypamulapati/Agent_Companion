@@ -37,7 +37,7 @@ export default function App() {
     return (
       <>
         <SignedOut>
-          <div className="min-h-screen bg-slate-900 text-slate-100 flex items-center justify-center p-4">
+          <div className="min-h-screen bg-canvas text-ink flex items-center justify-center p-4">
             <SignIn />
           </div>
         </SignedOut>

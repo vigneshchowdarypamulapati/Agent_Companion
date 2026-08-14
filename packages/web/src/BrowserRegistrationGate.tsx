@@ -40,10 +40,10 @@ export default function BrowserRegistrationGate({ onRegistered }: BrowserRegistr
   }, [getToken, onRegistered, attempt]);
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-canvas text-ink flex items-center justify-center p-4">
       {error ? (
         <div className="space-y-3 text-center">
-          <p role="alert" className="text-sm text-red-400">
+          <p role="alert" className="text-sm text-danger-light">
             {error}
           </p>
           <button
@@ -52,13 +52,13 @@ export default function BrowserRegistrationGate({ onRegistered }: BrowserRegistr
               setError(undefined);
               setAttempt((n) => n + 1);
             }}
-            className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium"
+            className="rounded-md bg-accent hover:bg-accent-hover px-4 py-2 text-sm font-medium"
           >
             Retry
           </button>
         </div>
       ) : (
-        <p className="text-sm text-slate-400">Setting up this browser…</p>
+        <p className="text-sm text-ink-muted">Setting up this browser…</p>
       )}
     </div>
   );

@@ -6,12 +6,12 @@ export interface ActivityFeedProps {
 
 export default function ActivityFeed({ events }: ActivityFeedProps) {
   if (events.length === 0) {
-    return <p className="text-sm text-slate-500">No activity yet.</p>;
+    return <p className="text-sm text-ink-faint">No activity yet.</p>;
   }
   return (
     <ul className="space-y-2">
       {events.map((event, index) => (
-        <li key={index} className="text-sm bg-slate-800 rounded-md px-3 py-2">
+        <li key={index} className="text-sm bg-panel rounded-md px-3 py-2">
           {describeEvent(event)}
         </li>
       ))}

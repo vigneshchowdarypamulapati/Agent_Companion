@@ -129,16 +129,16 @@ export default function SessionDetail({ token, onUnauthorized }: SessionDetailPr
   }
 
   if (!historyLoaded || !sessionsLoaded) {
-    return <p className="text-slate-400 p-4">Loading…</p>;
+    return <p className="text-ink-muted p-4">Loading…</p>;
   }
 
   const summary = sessions.find((s) => s.id === sessionId);
 
   if (!summary) {
     return (
-      <div className="min-h-screen bg-slate-900 text-slate-100 p-4 space-y-4 max-w-lg mx-auto">
-        <p className="text-slate-400">Session not found.</p>
-        <Link to="/" className="text-blue-400 underline">
+      <div className="min-h-screen bg-canvas text-ink p-4 space-y-4 max-w-lg mx-auto">
+        <p className="text-ink-muted">Session not found.</p>
+        <Link to="/" className="text-link underline">
           ← Back to sessions
         </Link>
       </div>
@@ -148,13 +148,13 @@ export default function SessionDetail({ token, onUnauthorized }: SessionDetailPr
   const permissionRequest = findPendingPermissionRequest(events);
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-4 space-y-4 max-w-lg mx-auto">
-      <Link to="/" className="text-sm text-blue-400 underline">
+    <div className="min-h-screen bg-canvas text-ink p-4 space-y-4 max-w-lg mx-auto">
+      <Link to="/" className="text-sm text-link underline">
         ← Back to sessions
       </Link>
 
       {loadError && (
-        <p role="alert" className="bg-red-900 text-red-100 rounded-md px-4 py-3">
+        <p role="alert" className="bg-danger-bg text-danger-text rounded-md px-4 py-3">
           Couldn't reach the relay: {loadError}
         </p>
       )}
@@ -179,12 +179,12 @@ export default function SessionDetail({ token, onUnauthorized }: SessionDetailPr
       />
 
       <div>
-        <h2 className="text-sm font-semibold text-slate-400 mb-2">Modified files</h2>
+        <h2 className="text-sm font-semibold text-ink-muted mb-2">Modified files</h2>
         <ModifiedFilesPanel events={events} />
       </div>
 
       <div>
-        <h2 className="text-sm font-semibold text-slate-400 mb-2">Activity</h2>
+        <h2 className="text-sm font-semibold text-ink-muted mb-2">Activity</h2>
         <ActivityFeed events={events} />
       </div>
     </div>

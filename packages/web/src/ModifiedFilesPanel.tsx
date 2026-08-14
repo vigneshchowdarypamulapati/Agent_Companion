@@ -8,12 +8,12 @@ export interface ModifiedFilesPanelProps {
 export default function ModifiedFilesPanel({ events }: ModifiedFilesPanelProps) {
   const files = deriveModifiedFiles(events);
   if (files.length === 0) {
-    return <p className="text-sm text-slate-500">No files modified yet.</p>;
+    return <p className="text-sm text-ink-faint">No files modified yet.</p>;
   }
   return (
     <ul className="space-y-1">
       {files.map((file) => (
-        <li key={file} className="text-sm font-mono bg-slate-800 rounded-md px-3 py-1.5">
+        <li key={file} className="text-sm font-mono bg-panel rounded-md px-3 py-1.5">
           {file}
         </li>
       ))}

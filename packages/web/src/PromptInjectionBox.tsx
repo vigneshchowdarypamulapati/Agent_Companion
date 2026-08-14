@@ -25,12 +25,12 @@ export default function PromptInjectionBox({ sessionId, disabled, onSend }: Prom
         disabled={disabled}
         placeholder={disabled ? 'Waiting for a permission response…' : 'Send a follow-up prompt'}
         aria-label="Prompt"
-        className="flex-1 rounded-md bg-slate-800 px-3 py-2 disabled:opacity-50"
+        className="flex-1 rounded-md bg-panel px-3 py-2 disabled:opacity-50"
       />
       <button
         type="submit"
         disabled={disabled || text.trim().length === 0}
-        className="rounded-md bg-blue-600 px-4 py-2 font-medium disabled:opacity-50"
+        className="rounded-md bg-accent hover:bg-accent-hover px-4 py-2 font-medium disabled:opacity-50"
       >
         Send
       </button>

@@ -17,7 +17,7 @@ export default function SessionControls({ sessionId, status, onSend }: SessionCo
         type="button"
         disabled={!canPause}
         onClick={() => onSend({ type: 'pause', sessionId })}
-        className="flex-1 rounded-md bg-slate-800 px-3 py-2 text-sm font-medium disabled:opacity-50"
+        className="flex-1 rounded-md bg-panel px-3 py-2 text-sm font-medium disabled:opacity-50"
       >
         Pause
       </button>
@@ -25,7 +25,7 @@ export default function SessionControls({ sessionId, status, onSend }: SessionCo
         type="button"
         disabled={!canResume}
         onClick={() => onSend({ type: 'resume', sessionId })}
-        className="flex-1 rounded-md bg-slate-800 px-3 py-2 text-sm font-medium disabled:opacity-50"
+        className="flex-1 rounded-md bg-panel px-3 py-2 text-sm font-medium disabled:opacity-50"
       >
         Resume
       </button>
@@ -33,7 +33,7 @@ export default function SessionControls({ sessionId, status, onSend }: SessionCo
         type="button"
         disabled={!canStop}
         onClick={() => onSend({ type: 'stop', sessionId })}
-        className="flex-1 rounded-md bg-red-800 px-3 py-2 text-sm font-medium disabled:opacity-50"
+        className="flex-1 rounded-md bg-danger hover:bg-danger-hover px-3 py-2 text-sm font-medium disabled:opacity-50"
       >
         Stop
       </button>

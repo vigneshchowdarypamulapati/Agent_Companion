@@ -150,34 +150,34 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 p-4 space-y-6 max-w-lg mx-auto">
+    <div className="min-h-screen bg-canvas text-ink p-4 space-y-6 max-w-lg mx-auto">
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Settings</h1>
-        <Link to="/" className="text-sm text-slate-400 underline">
+        <Link to="/" className="text-sm text-ink-muted underline">
           Back
         </Link>
       </div>
 
       {loadError && (
-        <p role="alert" className="bg-red-900 text-red-100 rounded-md px-4 py-3">
+        <p role="alert" className="bg-danger-bg text-danger-text rounded-md px-4 py-3">
           {loadError}
         </p>
       )}
 
       {device && (
-        <div className="bg-slate-800 rounded-md p-4 space-y-1">
+        <div className="bg-panel rounded-md p-4 space-y-1">
           <p className="font-medium">{device.name}</p>
-          <p className="text-sm text-slate-400 capitalize">{device.type}</p>
-          <p className="text-sm text-slate-400">Paired {new Date(device.createdAt).toLocaleDateString()}</p>
+          <p className="text-sm text-ink-muted capitalize">{device.type}</p>
+          <p className="text-sm text-ink-muted">Paired {new Date(device.createdAt).toLocaleDateString()}</p>
         </div>
       )}
 
       <form onSubmit={handleClaimPairingCode} className="border-t border-slate-700 pt-4 space-y-3">
-        <h2 className="text-sm font-medium text-slate-300">Pair a daemon</h2>
-        <p className="text-sm text-slate-400">
+        <h2 className="text-sm font-medium text-ink-secondary">Pair a daemon</h2>
+        <p className="text-sm text-ink-muted">
           Start the Companion daemon on your machine and enter the 6-digit code it prints.
         </p>
-        <label htmlFor="pairing-code" className="block text-sm text-slate-400">
+        <label htmlFor="pairing-code" className="block text-sm text-ink-muted">
           Pairing code
         </label>
         <input
@@ -189,18 +189,18 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
           maxLength={6}
           value={pairingCode}
           onChange={(e) => setPairingCode(e.target.value)}
-          className="w-full rounded-md bg-slate-800 px-3 py-2 tracking-widest"
+          className="w-full rounded-md bg-panel px-3 py-2 tracking-widest"
         />
         <button
           type="submit"
           disabled={pairBusy || pairingCode.trim().length === 0}
-          className="w-full rounded-md bg-blue-600 px-3 py-2 font-medium disabled:opacity-50"
+          className="w-full rounded-md bg-accent hover:bg-accent-hover px-3 py-2 font-medium disabled:opacity-50"
         >
           {pairBusy ? 'Pairing…' : 'Pair daemon'}
         </button>
-        {pairSucceeded && <p className="text-sm text-green-400">Daemon paired!</p>}
+        {pairSucceeded && <p className="text-sm text-success-text">Daemon paired!</p>}
         {pairError && (
-          <p role="alert" className="text-sm text-red-400">
+          <p role="alert" className="text-sm text-danger-light">
             {pairError}
           </p>
         )}
@@ -208,20 +208,20 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
 
       {pushAvailable && (
         <div className="border-t border-slate-700 pt-4 space-y-3">
-          <h2 className="text-sm font-medium text-slate-300">Notifications</h2>
+          <h2 className="text-sm font-medium text-ink-secondary">Notifications</h2>
           {pushPermission === 'denied' ? (
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-ink-muted">
               Notifications are blocked in your browser settings. Change your browser's site permissions to enable
               them.
             </p>
           ) : pushSubscribed ? (
             <div className="space-y-2">
-              <p className="text-sm text-slate-400">Notifications are enabled for this device.</p>
+              <p className="text-sm text-ink-muted">Notifications are enabled for this device.</p>
               <button
                 type="button"
                 onClick={handleDisablePush}
                 disabled={pushBusy}
-                className="w-full rounded-md bg-slate-800 px-3 py-2 font-medium disabled:opacity-50"
+                className="w-full rounded-md bg-panel px-3 py-2 font-medium disabled:opacity-50"
               >
                 {pushBusy ? 'Disabling…' : 'Disable notifications'}
               </button>
@@ -231,13 +231,13 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
               type="button"
               onClick={handleEnablePush}
               disabled={pushBusy}
-              className="w-full rounded-md bg-blue-600 px-3 py-2 font-medium disabled:opacity-50"
+              className="w-full rounded-md bg-accent hover:bg-accent-hover px-3 py-2 font-medium disabled:opacity-50"
             >
               {pushBusy ? 'Enabling…' : 'Enable notifications'}
             </button>
           )}
           {pushError && (
-            <p role="alert" className="text-sm text-red-400">
+            <p role="alert" className="text-sm text-danger-light">
               {pushError}
             </p>
           )}
@@ -249,13 +249,13 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
           <button
             type="button"
             onClick={() => setConfirming(true)}
-            className="w-full rounded-md bg-red-700 px-3 py-2 font-medium"
+            className="w-full rounded-md bg-danger hover:bg-danger-hover px-3 py-2 font-medium"
           >
             Unpair this device
           </button>
         ) : (
           <div className="space-y-2">
-            <p className="text-sm text-slate-300">
+            <p className="text-sm text-ink-secondary">
               This will sign you out of this device and you'll need to sign in again to use it.
             </p>
             <div className="flex gap-2">
@@ -263,7 +263,7 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
                 type="button"
                 onClick={handleUnpair}
                 disabled={busy}
-                className="flex-1 rounded-md bg-red-700 px-3 py-2 font-medium disabled:opacity-50"
+                className="flex-1 rounded-md bg-danger hover:bg-danger-hover px-3 py-2 font-medium disabled:opacity-50"
               >
                 {busy ? 'Unpairing…' : 'Confirm unpair'}
               </button>
@@ -271,7 +271,7 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
                 type="button"
                 onClick={() => setConfirming(false)}
                 disabled={busy}
-                className="flex-1 rounded-md bg-slate-800 px-3 py-2 font-medium disabled:opacity-50"
+                className="flex-1 rounded-md bg-panel px-3 py-2 font-medium disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -279,7 +279,7 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
           </div>
         )}
         {unpairError && (
-          <p role="alert" className="text-sm text-red-400">
+          <p role="alert" className="text-sm text-danger-light">
             {unpairError}
           </p>
         )}
