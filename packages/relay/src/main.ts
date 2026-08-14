@@ -52,6 +52,22 @@ if (trustProxyRaw !== undefined) {
   trustProxyHops = parsed;
 }
 
+let corsOrigins: string[] | undefined;
+const corsOriginsRaw = process.env.COMPANION_RELAY_CORS_ORIGIN;
+if (corsOriginsRaw !== undefined) {
+  corsOrigins = corsOriginsRaw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+  if (corsOrigins.length === 0) {
+    throw new Error(
+      'COMPANION_RELAY_CORS_ORIGIN must be a comma-separated list of at least one origin ' +
+        '(the web app\'s own origin(s)) if set at all. Leave it unset to allow the default ' +
+        'local dev origin only.'
+    );
+  }
+}
+
 const vapidPublicKey = process.env.COMPANION_RELAY_VAPID_PUBLIC_KEY;
 const vapidPrivateKey = process.env.COMPANION_RELAY_VAPID_PRIVATE_KEY;
 const vapidSubject = process.env.COMPANION_RELAY_VAPID_SUBJECT;
@@ -81,6 +97,7 @@ const httpServer = await createRelayServer({
   pushSender,
   vapidPublicKey: pushSender ? vapidPublicKey : undefined,
   trustProxyHops,
+  corsOrigins,
 });
 
 httpServer.listen(PORT, HOST, () => {

@@ -64,6 +64,14 @@ unknown — but if it is set, the relay fails fast at startup if the value
 isn't a non-negative integer. See "Rate limits" below for why getting this
 right matters.
 
+Set `COMPANION_RELAY_CORS_ORIGIN` to a comma-separated list of origins the
+web app is served from, so browsers are allowed to call this relay
+cross-origin (the relay and web app run on different origins by design —
+see the multi-user hosting spec). Unset defaults to
+`http://localhost:5173`, Vite's default dev port, matching this project's
+own local-dev pairing. Deployments must set this to the real web app
+origin(s) or every browser request will be blocked by CORS.
+
 ## REST endpoints
 
 - `POST /pairing/request-code` `{ deviceName }` — a daemon requests a

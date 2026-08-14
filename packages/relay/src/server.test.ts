@@ -389,6 +389,62 @@ describe('relay server', () => {
     expect(stillBlocked.status).toBe(429);
   });
 
+  // --- CORS ---
+
+  it('reflects an allowed origin and sets credentials-free CORS headers', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+      corsOrigins: ['http://localhost:5173'],
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer)
+      .post('/pairing/request-code')
+      .set('Origin', 'http://localhost:5173')
+      .send({ deviceName: 'x' });
+
+    expect(res.status).toBe(201);
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+  });
+
+  it('does not set an Access-Control-Allow-Origin header for a disallowed origin', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+      corsOrigins: ['http://localhost:5173'],
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer)
+      .post('/pairing/request-code')
+      .set('Origin', 'https://evil.example.com')
+      .send({ deviceName: 'x' });
+
+    // The browser (not the server) is what actually blocks the response from
+    // being read when the origin isn't reflected — the request itself still
+    // completes server-side, but no CORS header means the browser refuses it.
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('defaults corsOrigins to the Vite dev server origin when unset', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer)
+      .post('/pairing/request-code')
+      .set('Origin', 'http://localhost:5173')
+      .send({ deviceName: 'x' });
+
+    expect(res.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+  });
+
   it('returns 404 for an unknown session id when authenticated', async () => {
     httpServer = await createRelayServer({
       store: new InMemoryStore(),

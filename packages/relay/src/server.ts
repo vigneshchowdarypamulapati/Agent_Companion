@@ -1,4 +1,5 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
+import cors from 'cors';
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer } from 'ws';
 import {
@@ -48,7 +49,13 @@ export interface RelayServerOptions {
   /** Express `trust proxy` hop count — how many reverse proxies/load balancers sit in
    * front of this relay in the real deployment. Defaults to 0 (trust nothing). */
   trustProxyHops?: number;
+  /** Origins allowed to make cross-origin requests (the web app's own origin(s)).
+   * Defaults to the Vite dev server's default origin, matching the relay's own
+   * default local-dev port pairing in .env.example. */
+  corsOrigins?: string[];
 }
+
+const DEFAULT_CORS_ORIGINS = ['http://localhost:5173'];
 
 export async function createRelayServer({
   store,
@@ -57,6 +64,7 @@ export async function createRelayServer({
   pushSender,
   vapidPublicKey,
   trustProxyHops,
+  corsOrigins,
 }: RelayServerOptions): Promise<Server> {
   const pairing = new PairingService(store);
   const hub = new ConnectionHub(store, pubsub, undefined, undefined, pushSender);
@@ -92,6 +100,7 @@ export async function createRelayServer({
 
   const app = express();
   app.set('trust proxy', trustProxyHops ?? 0);
+  app.use(cors({ origin: corsOrigins ?? DEFAULT_CORS_ORIGINS }));
   app.use(express.json());
 
   app.post(
