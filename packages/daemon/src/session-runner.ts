@@ -202,7 +202,15 @@ export class SessionRunner {
         });
         break;
       case 'turn_complete':
-        this.emit({ type: 'turn_complete', sessionId: this.id, at: Date.now() });
+        // pause() sets _status to 'paused' as soon as interrupt() resolves, and the SDK
+        // guarantees the interrupted turn's result message arrives strictly after that —
+        // so a turn_complete seen while paused is the deliberate interrupt's echo, not a
+        // real "Claude is idle, waiting for a reply" moment. Suppressing it here (rather
+        // than in the relay) is what avoids a push notification firing the instant a user
+        // hits Pause.
+        if (this._status !== 'paused') {
+          this.emit({ type: 'turn_complete', sessionId: this.id, at: Date.now() });
+        }
         break;
       default:
         break;

@@ -112,6 +112,45 @@ describe('SessionRunner', () => {
     expect(runner.status).toBe('paused');
   });
 
+  it('emits turn_complete when the agent stream reports it and the session is not paused', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const runner = new SessionRunner({
+      id: 'session-15',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.start('do the thing');
+    agent.outgoing.push({ type: 'turn_complete' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(events.some((e) => e.type === 'turn_complete')).toBe(true);
+  });
+
+  it('suppresses turn_complete when it arrives as the delayed result of a pause-induced interrupt', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const runner = new SessionRunner({
+      id: 'session-16',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.start('do the thing');
+    await runner.pause();
+
+    // Simulate the interrupted turn's result message arriving on the main stream
+    // after interrupt() has already resolved and paused() has set status to 'paused'.
+    agent.outgoing.push({ type: 'turn_complete' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(runner.status).toBe('paused');
+    expect(events.some((e) => e.type === 'turn_complete')).toBe(false);
+  });
+
   it('resume sets status back to running, and injectPrompt pushes onto the input stream', async () => {
     const agent = createMockAgent();
     const runner = new SessionRunner({
