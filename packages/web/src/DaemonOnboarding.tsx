@@ -33,7 +33,7 @@ export default function DaemonOnboarding({ token, onUnauthorized }: DaemonOnboar
 
   if (paired) {
     return (
-      <div className="bg-panel rounded-md p-4 space-y-1 text-center">
+      <div role="status" className="bg-panel rounded-md p-4 space-y-1 text-center">
         <p className="font-medium text-ink">Daemon paired</p>
         <p className="text-sm text-ink-muted">Waiting for your first session…</p>
       </div>

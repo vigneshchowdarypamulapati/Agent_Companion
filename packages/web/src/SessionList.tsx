@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useSessions } from './SessionsProvider';
 import { sortSessions } from './sort-sessions';
@@ -17,6 +17,8 @@ export default function SessionList({ token, onUnauthorized }: SessionListProps)
   const { sessions, loaded, connected, loadError, dismissSession } = useSessions();
   const [dismissErrors, setDismissErrors] = useState<Record<string, string>>({});
   const [daemonPaired, setDaemonPaired] = useState<boolean | undefined>(undefined);
+  const onUnauthorizedRef = useRef(onUnauthorized);
+  onUnauthorizedRef.current = onUnauthorized;
 
   const sorted = sortSessions(sessions);
   const showsEmptyState = loaded && sorted.length === 0;
@@ -31,7 +33,7 @@ export default function SessionList({ token, onUnauthorized }: SessionListProps)
       .catch((err) => {
         if (cancelled) return;
         if (err instanceof UnauthorizedError) {
-          onUnauthorized();
+          onUnauthorizedRef.current();
           return;
         }
         // A daemon-status check failing should never block or mislead a
@@ -42,7 +44,7 @@ export default function SessionList({ token, onUnauthorized }: SessionListProps)
     return () => {
       cancelled = true;
     };
-  }, [showsEmptyState, token, onUnauthorized]);
+  }, [showsEmptyState, token]);
 
   async function handleDismiss(sessionId: string) {
     setDismissErrors((prev) => {
