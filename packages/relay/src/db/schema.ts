@@ -80,7 +80,7 @@ export const sessions = pgTable('sessions', {
   userId: text('user_id').notNull(),
   daemonDeviceId: text('daemon_device_id').notNull(),
   projectPath: text('project_path').notNull(),
-  status: text('status', { enum: ['running', 'waiting_permission', 'paused', 'stopped'] }).notNull(),
+  status: text('status', { enum: ['running', 'waiting_permission', 'waiting_input', 'paused', 'stopped'] }).notNull(),
   startedAt: bigint('started_at', { mode: 'number' }).notNull(),
   lastEventAt: bigint('last_event_at', { mode: 'number' }).notNull(),
   dismissed: boolean('dismissed').notNull().default(false),
