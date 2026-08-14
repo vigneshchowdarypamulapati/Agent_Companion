@@ -172,7 +172,7 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
         </div>
       )}
 
-      <form onSubmit={handleClaimPairingCode} className="border-t border-slate-700 pt-4 space-y-3">
+      <form onSubmit={handleClaimPairingCode} className="border-t border-border pt-4 space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Pair a daemon</h2>
         <p className="text-sm text-ink-muted">
           Start the Companion daemon on your machine and enter the 6-digit code it prints.
@@ -207,7 +207,7 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
       </form>
 
       {pushAvailable && (
-        <div className="border-t border-slate-700 pt-4 space-y-3">
+        <div className="border-t border-border pt-4 space-y-3">
           <h2 className="text-sm font-medium text-ink-secondary">Notifications</h2>
           {pushPermission === 'denied' ? (
             <p className="text-sm text-ink-muted">
@@ -244,7 +244,7 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
         </div>
       )}
 
-      <div className="border-t border-slate-700 pt-4 space-y-3">
+      <div className="border-t border-border pt-4 space-y-3">
         {!confirming ? (
           <button
             type="button"
