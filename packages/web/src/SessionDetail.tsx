@@ -205,6 +205,7 @@ function findLastAssistantText(events: SessionEvent[]): string | undefined {
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i];
     if (event.type === 'assistant_text') return event.text;
+    if (event.type === 'turn_complete' && i < events.length - 1) return undefined;
   }
   return undefined;
 }

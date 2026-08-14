@@ -195,11 +195,17 @@ export class PostgresStore implements Store {
       .orderBy(asc(sessionEvents.seq));
   }
 
-  async getLastEventOfType(sessionId: string, type: SessionEvent['type']): Promise<StoredSessionEvent | undefined> {
+  async getLastEventOfType(sessionId: string, type: SessionEvent['type'], beforeSeq?: number): Promise<StoredSessionEvent | undefined> {
     const [row] = await this.db
       .select()
       .from(sessionEvents)
-      .where(and(eq(sessionEvents.sessionId, sessionId), sql`${sessionEvents.event}->>'type' = ${type}`))
+      .where(
+        and(
+          eq(sessionEvents.sessionId, sessionId),
+          sql`${sessionEvents.event}->>'type' = ${type}`,
+          beforeSeq === undefined ? undefined : lt(sessionEvents.seq, beforeSeq)
+        )
+      )
       .orderBy(desc(sessionEvents.seq))
       .limit(1);
     return row;

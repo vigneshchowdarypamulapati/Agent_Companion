@@ -284,6 +284,27 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
       expect(await store.getLastEventOfType('does-not-exist', 'assistant_text')).toBeUndefined();
     });
 
+    it('getLastEventOfType with a beforeSeq bound excludes events at or after that seq', async () => {
+      const store = await makeStore();
+      const first = await store.appendSessionEvent('sess-1', {
+        type: 'assistant_text',
+        sessionId: 'sess-1',
+        text: 'first',
+        at: 1,
+      });
+      const second = await store.appendSessionEvent('sess-1', {
+        type: 'assistant_text',
+        sessionId: 'sess-1',
+        text: 'second',
+        at: 2,
+      });
+
+      const found = await store.getLastEventOfType('sess-1', 'assistant_text', second.seq);
+
+      expect(found?.seq).toBe(first.seq);
+      expect(found?.event).toMatchObject({ type: 'assistant_text', text: 'first' });
+    });
+
     it('upsertSession and updateSessionStatus round-trip', async () => {
       const store = await makeStore();
       await store.upsertSession({

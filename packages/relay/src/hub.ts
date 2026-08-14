@@ -35,7 +35,7 @@ const STATUS_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], SessionStatus>>
  * Event types that trigger a push notification, and the notification title for each. A type
  * absent from this map never notifies — this is the single source of truth for "which events
  * are worth waking someone's phone up for" (currently: a permission prompt blocking the
- * session, an error, or the session stopping).
+ * session, Claude finishing a turn and waiting on a reply, an error, or the session stopping).
  */
 const NOTIFICATION_TITLE_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], string>> = {
   permission_request: 'Needs your permission',
@@ -155,7 +155,7 @@ export class ConnectionHub {
           userId,
           message: { kind: 'event', sessionId: session.id, seq: stored.seq, event },
         } satisfies PubSubEnvelope);
-        await this.notifyPush(userId, session.id, event.type);
+        await this.notifyPush(userId, session.id, event.type, stored.seq);
       }
     } catch {
       // Best-effort cleanup running detached from any request/connection — a store or pubsub
@@ -205,7 +205,7 @@ export class ConnectionHub {
       message: { kind: 'event', sessionId, seq: stored.seq, event },
     } satisfies PubSubEnvelope);
 
-    await this.notifyPush(connection.userId, sessionId, event.type);
+    await this.notifyPush(connection.userId, sessionId, event.type, stored.seq);
   }
 
   async routeFromBrowser(connection: Connection, sessionId: string, command: Command): Promise<void> {
@@ -237,7 +237,7 @@ export class ConnectionHub {
    * store failure — is swallowed: push delivery is best-effort and must never affect event
    * routing or crash the process.
    */
-  private async notifyPush(userId: string, sessionId: string, eventType: SessionEvent['type']): Promise<void> {
+  private async notifyPush(userId: string, sessionId: string, eventType: SessionEvent['type'], currentSeq: number): Promise<void> {
     if (!this.pushSender) return;
     const title = NOTIFICATION_TITLE_BY_EVENT_TYPE[eventType];
     if (!title) return;
@@ -246,7 +246,7 @@ export class ConnectionHub {
       if (!session) return;
       const devices = await this.store.getDevicesForUser(userId);
       const targets = devices.filter((d) => d.type === 'browser' && d.pushSubscription);
-      const body = eventType === 'turn_complete' ? await this.lastAssistantTextOrProjectPath(sessionId, session.projectPath) : session.projectPath;
+      const body = eventType === 'turn_complete' ? await this.lastAssistantTextOrProjectPath(sessionId, session.projectPath, currentSeq) : session.projectPath;
       const payload: PushPayload = { title, body, url: `/sessions/${sessionId}` };
       await Promise.all(
         targets.map(async (device) => {
@@ -265,10 +265,12 @@ export class ConnectionHub {
     }
   }
 
-  private async lastAssistantTextOrProjectPath(sessionId: string, projectPath: string): Promise<string> {
-    const last = await this.store.getLastEventOfType(sessionId, 'assistant_text');
-    if (!last || last.event.type !== 'assistant_text') return projectPath;
-    const text = last.event.text;
+  private async lastAssistantTextOrProjectPath(sessionId: string, projectPath: string, currentSeq: number): Promise<string> {
+    const previousTurnComplete = await this.store.getLastEventOfType(sessionId, 'turn_complete', currentSeq);
+    const lastAssistantText = await this.store.getLastEventOfType(sessionId, 'assistant_text', currentSeq);
+    if (!lastAssistantText || lastAssistantText.event.type !== 'assistant_text') return projectPath;
+    if (previousTurnComplete && previousTurnComplete.seq > lastAssistantText.seq) return projectPath;
+    const text = lastAssistantText.event.text;
     return text.length > 140 ? `${text.slice(0, 140)}…` : text;
   }
 

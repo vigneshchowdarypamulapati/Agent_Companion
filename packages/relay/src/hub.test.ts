@@ -811,6 +811,38 @@ describe('ConnectionHub', () => {
     expect(turnCompletePush?.payload.body).toBe('/tmp/project');
   });
 
+  it('falls back to the project path rather than a stale assistant_text from a previous turn', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const userId = 'user-1';
+    const browserDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    await store.setPushSubscription(browserDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    // First turn: produces an assistant_text, then completes.
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'assistant_text',
+      sessionId: 'sess-1',
+      text: 'first message',
+      at: 2,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 3 });
+    // Second turn: no assistant_text at all (e.g. a tool-only turn), just completes.
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 4 });
+
+    const turnCompletePushes = pushSender.sent.filter((s) => s.payload.title === 'Claude is waiting for you');
+    expect(turnCompletePushes).toHaveLength(2);
+    expect(turnCompletePushes[1]?.payload.body).toBe('/tmp/project');
+  });
+
   it('does not send a push notification for a non-qualifying event type', async () => {
     const store = new InMemoryStore();
     const pushSender = fakePushSender();

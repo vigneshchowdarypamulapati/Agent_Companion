@@ -97,6 +97,36 @@ describe('SessionDetail', () => {
     expect(screen.getByPlaceholderText("What's next?")).toBeInTheDocument();
   });
 
+  it('does not show the callout when the current turn produced no assistant_text, even if an earlier turn did', async () => {
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([
+      {
+        seq: 1,
+        sessionId: 'sess-1',
+        event: { type: 'assistant_text', sessionId: 'sess-1', text: 'first message', at: 1 },
+        createdAt: 1,
+      },
+      {
+        seq: 2,
+        sessionId: 'sess-1',
+        event: { type: 'turn_complete', sessionId: 'sess-1', at: 2 },
+        createdAt: 2,
+      },
+      {
+        seq: 3,
+        sessionId: 'sess-1',
+        event: { type: 'turn_complete', sessionId: 'sess-1', at: 3 },
+        createdAt: 3,
+      },
+    ]);
+    mockSessions({ sessions: [{ ...activeSummary, status: 'waiting_input' }] });
+
+    renderDetail();
+
+    await screen.findByPlaceholderText("What's next?");
+    expect(screen.queryByText('Claude is waiting for your reply')).not.toBeInTheDocument();
+    expect(screen.queryByText('first message', { selector: 'p' })).not.toBeInTheDocument();
+  });
+
   it('does not show the waiting_input callout when running', async () => {
     vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([
       {
