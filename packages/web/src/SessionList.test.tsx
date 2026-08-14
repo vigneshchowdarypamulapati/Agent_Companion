@@ -1,9 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import SessionList from './SessionList';
 import * as sessionsProviderModule from './SessionsProvider';
+import * as devicesApi from './api/devices';
+import { UnauthorizedError } from './api/sessions';
 import type { SessionSummary } from './use-sessions-store';
 
 function mockSessions(overrides: Partial<ReturnType<typeof sessionsProviderModule.useSessions>> = {}) {
@@ -21,12 +23,13 @@ function mockSessions(overrides: Partial<ReturnType<typeof sessionsProviderModul
   return { dismissSession };
 }
 
-function renderList() {
-  return render(
+function renderList(token = 'tok-1', onUnauthorized = vi.fn()) {
+  render(
     <MemoryRouter>
-      <SessionList />
+      <SessionList token={token} onUnauthorized={onUnauthorized} />
     </MemoryRouter>
   );
+  return onUnauthorized;
 }
 
 describe('SessionList', () => {
@@ -34,13 +37,49 @@ describe('SessionList', () => {
     vi.restoreAllMocks();
   });
 
-  it('shows the empty state when there are no active sessions', () => {
+  it('shows the plain empty state when there are no active sessions and a daemon is already paired', async () => {
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
     mockSessions();
     renderList();
-    expect(screen.getByText('No active sessions.')).toBeInTheDocument();
+    expect(await screen.findByText('No active sessions.')).toBeInTheDocument();
+    expect(screen.queryByText('Connect your daemon')).not.toBeInTheDocument();
+  });
+
+  it('shows daemon onboarding when there are no active sessions and no daemon is paired', async () => {
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(false);
+    mockSessions();
+    renderList();
+    expect(await screen.findByText('Connect your daemon')).toBeInTheDocument();
+    expect(screen.queryByText('No active sessions.')).not.toBeInTheDocument();
+  });
+
+  it('shows daemon onboarding if the daemon-status check itself fails', async () => {
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockRejectedValue(new Error('HTTP 500'));
+    mockSessions();
+    renderList();
+    expect(await screen.findByText('Connect your daemon')).toBeInTheDocument();
+  });
+
+  it('does not show onboarding or the empty-state text once real sessions exist', async () => {
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(false);
+    mockSessions({
+      sessions: [{ id: 'sess-a', projectPath: '/tmp/a', status: 'running', lastEventAt: 1 }],
+    });
+    renderList();
+    await waitFor(() => expect(screen.queryByText(/Loading/)).not.toBeInTheDocument());
+    expect(screen.queryByText('Connect your daemon')).not.toBeInTheDocument();
+    expect(screen.queryByText('No active sessions.')).not.toBeInTheDocument();
+  });
+
+  it('calls onUnauthorized if the daemon-status check gets a 401', async () => {
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockRejectedValue(new UnauthorizedError());
+    mockSessions();
+    const onUnauthorized = renderList();
+    await waitFor(() => expect(onUnauthorized).toHaveBeenCalled());
   });
 
   it('shows a loading state before the initial load resolves', () => {
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
     mockSessions({ loaded: false });
     renderList();
     expect(screen.getByText('Loading…')).toBeInTheDocument();
@@ -76,6 +115,7 @@ describe('SessionList', () => {
   });
 
   it('links to the settings screen', () => {
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
     mockSessions();
     renderList();
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings');
@@ -117,6 +157,7 @@ describe('SessionList', () => {
   });
 
   it('shows a banner when the initial list load failed', () => {
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
     mockSessions({ loadError: 'HTTP 500' });
     renderList();
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 500');

@@ -1,13 +1,48 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { useSessions } from './SessionsProvider';
 import { sortSessions } from './sort-sessions';
 import { formatRelativeTime } from './format-relative-time';
 import { STATUS_LABEL } from './SessionStatusBar';
+import { getDaemonStatus } from './api/devices';
+import { UnauthorizedError } from './api/sessions';
+import DaemonOnboarding from './DaemonOnboarding';
 
-export default function SessionList() {
+export interface SessionListProps {
+  token: string;
+  onUnauthorized: () => void;
+}
+
+export default function SessionList({ token, onUnauthorized }: SessionListProps) {
   const { sessions, loaded, connected, loadError, dismissSession } = useSessions();
   const [dismissErrors, setDismissErrors] = useState<Record<string, string>>({});
+  const [daemonPaired, setDaemonPaired] = useState<boolean | undefined>(undefined);
+
+  const sorted = sortSessions(sessions);
+  const showsEmptyState = loaded && sorted.length === 0;
+
+  useEffect(() => {
+    if (!showsEmptyState) return;
+    let cancelled = false;
+    getDaemonStatus(token)
+      .then((paired) => {
+        if (!cancelled) setDaemonPaired(paired);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        // A daemon-status check failing should never block or mislead a
+        // new user — fail toward showing onboarding rather than silently
+        // falling back to the unhelpful blank "No active sessions." text.
+        setDaemonPaired(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showsEmptyState, token, onUnauthorized]);
 
   async function handleDismiss(sessionId: string) {
     setDismissErrors((prev) => {
@@ -25,8 +60,6 @@ export default function SessionList() {
   if (!loaded) {
     return <p className="text-ink-muted p-4">Loading…</p>;
   }
-
-  const sorted = sortSessions(sessions);
 
   return (
     <div className="min-h-screen bg-canvas text-ink p-4 space-y-4 max-w-lg mx-auto">
@@ -48,7 +81,12 @@ export default function SessionList() {
         </p>
       )}
 
-      {sorted.length === 0 && <p className="text-ink-muted">No active sessions.</p>}
+      {showsEmptyState &&
+        (daemonPaired === false ? (
+          <DaemonOnboarding token={token} onUnauthorized={onUnauthorized} />
+        ) : daemonPaired === true ? (
+          <p className="text-ink-muted">No active sessions.</p>
+        ) : null)}
 
       <ul className="space-y-2">
         {sorted.map((session) => (

@@ -52,7 +52,10 @@ export default function App() {
     <SessionsProvider token={credentials.token} onUnauthorized={handleUnauthorized}>
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<SessionList />} />
+          <Route
+            path="/"
+            element={<SessionList token={credentials.token} onUnauthorized={handleUnauthorized} />}
+          />
           <Route
             path="/sessions/:id"
             element={<KeyedSessionDetail token={credentials.token} onUnauthorized={handleUnauthorized} />}
