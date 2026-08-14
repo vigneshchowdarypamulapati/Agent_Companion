@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { getDevice, unpairDevice, registerBrowserDevice } from './devices';
+import { getDevice, unpairDevice, registerBrowserDevice, getDaemonStatus } from './devices';
 import { UnauthorizedError } from './sessions';
 
 describe('devices API', () => {
@@ -56,6 +56,26 @@ describe('devices API', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     await unpairDevice('tok-1');
+  });
+
+  it('getDaemonStatus returns true when the relay reports paired: true', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ paired: true }) })));
+    await expect(getDaemonStatus('tok-1')).resolves.toBe(true);
+  });
+
+  it('getDaemonStatus returns false when the relay reports paired: false', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ paired: false }) })));
+    await expect(getDaemonStatus('tok-1')).resolves.toBe(false);
+  });
+
+  it('getDaemonStatus throws UnauthorizedError on 401', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) })));
+    await expect(getDaemonStatus('bad-token')).rejects.toBeInstanceOf(UnauthorizedError);
+  });
+
+  it('getDaemonStatus throws on a non-401 error status', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })));
+    await expect(getDaemonStatus('tok-1')).rejects.toThrow('HTTP 500');
   });
 });
 
