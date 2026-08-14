@@ -3,6 +3,7 @@ import { z } from 'zod';
 export const SessionStatus = z.enum([
   'running',
   'waiting_permission',
+  'waiting_input',
   'paused',
   'stopped',
 ]);
