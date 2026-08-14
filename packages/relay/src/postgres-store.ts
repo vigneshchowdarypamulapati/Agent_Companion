@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { and, asc, eq, gt, gte, isNotNull, isNull, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import type { PushSubscriptionPayload, SessionEvent, SessionStatus } from '@companion/protocol';
 import type { Device, DismissSessionResult, PairingCode, SessionRecord, Store, StoredSessionEvent, User } from './store.js';
 import type { Db } from './db/client.js';
@@ -193,5 +193,15 @@ export class PostgresStore implements Store {
       .from(sessionEvents)
       .where(and(eq(sessionEvents.sessionId, sessionId), gt(sessionEvents.seq, sinceSeq)))
       .orderBy(asc(sessionEvents.seq));
+  }
+
+  async getLastEventOfType(sessionId: string, type: SessionEvent['type']): Promise<StoredSessionEvent | undefined> {
+    const [row] = await this.db
+      .select()
+      .from(sessionEvents)
+      .where(and(eq(sessionEvents.sessionId, sessionId), sql`${sessionEvents.event}->>'type' = ${type}`))
+      .orderBy(desc(sessionEvents.seq))
+      .limit(1);
+    return row;
   }
 }

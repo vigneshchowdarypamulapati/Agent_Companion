@@ -261,6 +261,29 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
       expect(await store.getSessionEvents('sess-1', NaN)).toEqual([]);
     });
 
+    it('getLastEventOfType returns the most recently appended event of that type', async () => {
+      const store = await makeStore();
+      await store.appendSessionEvent('sess-1', { type: 'assistant_text', sessionId: 'sess-1', text: 'first', at: 1 });
+      await store.appendSessionEvent('sess-1', { type: 'tool_use', sessionId: 'sess-1', toolName: 'Bash', input: {}, at: 2 });
+      await store.appendSessionEvent('sess-1', { type: 'assistant_text', sessionId: 'sess-1', text: 'second', at: 3 });
+
+      const found = await store.getLastEventOfType('sess-1', 'assistant_text');
+
+      expect(found?.event).toMatchObject({ type: 'assistant_text', text: 'second' });
+    });
+
+    it('getLastEventOfType returns undefined when no event of that type exists', async () => {
+      const store = await makeStore();
+      await store.appendSessionEvent('sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 1 });
+
+      expect(await store.getLastEventOfType('sess-1', 'assistant_text')).toBeUndefined();
+    });
+
+    it('getLastEventOfType returns undefined for an unknown session', async () => {
+      const store = await makeStore();
+      expect(await store.getLastEventOfType('does-not-exist', 'assistant_text')).toBeUndefined();
+    });
+
     it('upsertSession and updateSessionStatus round-trip', async () => {
       const store = await makeStore();
       await store.upsertSession({

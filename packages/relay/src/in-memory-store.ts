@@ -183,4 +183,12 @@ export class InMemoryStore implements Store {
     const list = this.events.get(sessionId) ?? [];
     return list.filter((e) => e.seq > sinceSeq);
   }
+
+  async getLastEventOfType(sessionId: string, type: SessionEvent['type']): Promise<StoredSessionEvent | undefined> {
+    const list = this.events.get(sessionId) ?? [];
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      if (list[i].event.type === type) return list[i];
+    }
+    return undefined;
+  }
 }

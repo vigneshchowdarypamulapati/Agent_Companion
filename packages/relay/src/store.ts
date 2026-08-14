@@ -76,4 +76,5 @@ export interface Store {
   dismissSession(sessionId: string, userId: string): Promise<DismissSessionResult>;
   appendSessionEvent(sessionId: string, event: SessionEvent): Promise<StoredSessionEvent>;
   getSessionEvents(sessionId: string, sinceSeq?: number): Promise<StoredSessionEvent[]>;
+  getLastEventOfType(sessionId: string, type: SessionEvent['type']): Promise<StoredSessionEvent | undefined>;
 }
