@@ -279,6 +279,19 @@ export async function createRelayServer({
     })
   );
 
+  app.get(
+    '/devices/daemon-status',
+    asyncHandler(async (req, res) => {
+      const device = await authenticate(req, pairing);
+      if (!device) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      const daemon = await store.getDaemonDeviceForUser(device.userId);
+      res.status(200).json({ paired: daemon !== undefined });
+    })
+  );
+
   app.post(
     '/devices/unpair',
     asyncHandler(async (req, res) => {

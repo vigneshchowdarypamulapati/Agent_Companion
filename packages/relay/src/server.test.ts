@@ -893,6 +893,56 @@ describe('relay server', () => {
     expect(res.status).toBe(401);
   });
 
+  // --- GET /devices/daemon-status ---
+
+  it('GET /devices/daemon-status returns paired: false when the account has no daemon', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const browserToken = await registerBrowser(httpServer, 'my-browser');
+
+    const res = await request(httpServer)
+      .get('/devices/daemon-status')
+      .set('Authorization', `Bearer ${browserToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ paired: false });
+  });
+
+  it('GET /devices/daemon-status returns paired: true once a daemon is paired to the account', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const browserToken = await registerBrowser(httpServer, 'my-browser');
+    await pairDaemon(httpServer, browserToken, 'my-daemon');
+
+    const res = await request(httpServer)
+      .get('/devices/daemon-status')
+      .set('Authorization', `Bearer ${browserToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ paired: true });
+  });
+
+  it('GET /devices/daemon-status returns 401 when unauthenticated', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer).get('/devices/daemon-status');
+
+    expect(res.status).toBe(401);
+  });
+
   // --- POST /devices/unpair ---
 
   it('unpairs the device: the endpoint succeeds and the token stops authenticating', async () => {
