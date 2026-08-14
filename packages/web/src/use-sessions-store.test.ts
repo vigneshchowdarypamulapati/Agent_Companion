@@ -90,6 +90,32 @@ describe('useSessionsStore', () => {
     );
   });
 
+  it('sets status to waiting_input on a live turn_complete event, and back to running on assistant_text', async () => {
+    vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([sessionA]);
+    const mock = mockUseRelayConnection();
+
+    const { result } = renderHook(() => useSessionsStore('tok-1', () => {}));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => {
+      mock.emit({ sessionId: 'sess-1', seq: 2, event: { type: 'turn_complete', sessionId: 'sess-1', at: 5 } });
+    });
+    await waitFor(() =>
+      expect(result.current.sessions.find((s) => s.id === 'sess-1')).toMatchObject({ status: 'waiting_input' })
+    );
+
+    act(() => {
+      mock.emit({
+        sessionId: 'sess-1',
+        seq: 3,
+        event: { type: 'assistant_text', sessionId: 'sess-1', text: 'continuing…', at: 6 },
+      });
+    });
+    await waitFor(() =>
+      expect(result.current.sessions.find((s) => s.id === 'sess-1')).toMatchObject({ status: 'running' })
+    );
+  });
+
   it('inserts a new session on a live session_started event', async () => {
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
     const mock = mockUseRelayConnection();

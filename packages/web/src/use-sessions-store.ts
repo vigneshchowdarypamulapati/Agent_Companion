@@ -20,7 +20,9 @@ export interface SessionSummary {
 const STATUS_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], SessionStatus>> = {
   permission_request: 'waiting_permission',
   permission_resolved: 'running',
-  turn_complete: 'running',
+  assistant_text: 'running',
+  tool_use: 'running',
+  turn_complete: 'waiting_input',
   stopped: 'stopped',
   error: 'stopped',
 };
