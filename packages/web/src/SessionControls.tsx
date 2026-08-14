@@ -7,7 +7,7 @@ export interface SessionControlsProps {
 }
 
 export default function SessionControls({ sessionId, status, onSend }: SessionControlsProps) {
-  const canPause = status === 'running';
+  const canPause = status === 'running' || status === 'waiting_input';
   const canResume = status === 'paused';
   const canStop = status !== 'stopped';
 

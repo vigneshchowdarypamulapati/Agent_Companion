@@ -105,6 +105,14 @@ describe('SessionList', () => {
     expect(screen.getByText('Needs attention')).toBeInTheDocument();
   });
 
+  it('shows the "Your turn" badge for a waiting_input session', () => {
+    mockSessions({
+      sessions: [{ id: 'sess-a', projectPath: '/tmp/a', status: 'waiting_input', lastEventAt: 1 }],
+    });
+    renderList();
+    expect(screen.getByText('Your turn')).toBeInTheDocument();
+  });
+
   it('links each card to its session detail route', () => {
     mockSessions({
       sessions: [{ id: 'sess-a', projectPath: '/tmp/a', status: 'running', lastEventAt: 1 }],

@@ -32,6 +32,13 @@ describe('SessionControls', () => {
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
   });
 
+  it('enables Pause and Stop when waiting_input, same as running', () => {
+    render(<SessionControls sessionId="sess-1" status="waiting_input" onSend={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
+  });
+
   it('sends the pause command with the session id', async () => {
     const onSend = vi.fn();
     render(<SessionControls sessionId="sess-1" status="running" onSend={onSend} />);

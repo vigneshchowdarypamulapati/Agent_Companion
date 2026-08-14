@@ -9,6 +9,7 @@ export interface SessionStatusBarProps {
 export const STATUS_LABEL: Record<SessionStatus, string> = {
   running: 'Running',
   waiting_permission: 'Waiting for permission',
+  waiting_input: 'Waiting for you',
   paused: 'Paused',
   stopped: 'Stopped',
 };

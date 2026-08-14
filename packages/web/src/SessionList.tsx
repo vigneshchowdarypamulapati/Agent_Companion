@@ -100,6 +100,9 @@ export default function SessionList({ token, onUnauthorized }: SessionListProps)
                   {session.status === 'waiting_permission' && (
                     <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-warning">Needs attention</span>
                   )}
+                  {session.status === 'waiting_input' && (
+                    <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-accent">Your turn</span>
+                  )}
                 </p>
                 <p className="text-sm text-ink-muted">{session.projectPath}</p>
               </div>
