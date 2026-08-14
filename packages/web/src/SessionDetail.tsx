@@ -146,6 +146,7 @@ export default function SessionDetail({ token, onUnauthorized }: SessionDetailPr
   }
 
   const permissionRequest = findPendingPermissionRequest(events);
+  const lastAssistantText = summary.status === 'waiting_input' ? findLastAssistantText(events) : undefined;
 
   return (
     <div className="min-h-screen bg-canvas text-ink p-4 space-y-4 max-w-lg mx-auto">
@@ -172,9 +173,18 @@ export default function SessionDetail({ token, onUnauthorized }: SessionDetailPr
       )}
 
       <SessionControls sessionId={sessionId} status={summary.status} onSend={handleSend} />
+
+      {lastAssistantText && (
+        <div className="bg-panel rounded-md px-4 py-3">
+          <p className="text-xs font-medium text-ink-muted mb-1">Claude is waiting for your reply</p>
+          <p className="text-sm">{lastAssistantText}</p>
+        </div>
+      )}
+
       <PromptInjectionBox
         sessionId={sessionId}
         disabled={summary.status === 'waiting_permission'}
+        placeholder={summary.status === 'waiting_input' ? "What's next?" : undefined}
         onSend={handleSend}
       />
 
@@ -189,6 +199,14 @@ export default function SessionDetail({ token, onUnauthorized }: SessionDetailPr
       </div>
     </div>
   );
+}
+
+function findLastAssistantText(events: SessionEvent[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event.type === 'assistant_text') return event.text;
+  }
+  return undefined;
 }
 
 function findPendingPermissionRequest(

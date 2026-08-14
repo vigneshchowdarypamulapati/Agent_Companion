@@ -73,6 +73,47 @@ describe('SessionDetail', () => {
     expect(screen.getByText('/tmp/project')).toBeInTheDocument();
   });
 
+  it('shows the last-assistant-message callout and contextual placeholder when waiting_input', async () => {
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([
+      {
+        seq: 1,
+        sessionId: 'sess-1',
+        event: { type: 'assistant_text', sessionId: 'sess-1', text: 'Task 1 is done — want task 2 next?', at: 1 },
+        createdAt: 1,
+      },
+      {
+        seq: 2,
+        sessionId: 'sess-1',
+        event: { type: 'turn_complete', sessionId: 'sess-1', at: 2 },
+        createdAt: 2,
+      },
+    ]);
+    mockSessions({ sessions: [{ ...activeSummary, status: 'waiting_input' }] });
+
+    renderDetail();
+
+    expect(await screen.findByText('Claude is waiting for your reply')).toBeInTheDocument();
+    expect(screen.getByText('Task 1 is done — want task 2 next?', { selector: 'p' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("What's next?")).toBeInTheDocument();
+  });
+
+  it('does not show the waiting_input callout when running', async () => {
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([
+      {
+        seq: 1,
+        sessionId: 'sess-1',
+        event: { type: 'assistant_text', sessionId: 'sess-1', text: 'still working', at: 1 },
+        createdAt: 1,
+      },
+    ]);
+    mockSessions();
+
+    renderDetail();
+
+    await screen.findByText('Running');
+    expect(screen.queryByText('Claude is waiting for your reply')).not.toBeInTheDocument();
+  });
+
   it('appends a live event received through subscribe', async () => {
     vi.spyOn(sessionsApi, 'getSessionEvents').mockResolvedValue([]);
     const mock = mockSessions();

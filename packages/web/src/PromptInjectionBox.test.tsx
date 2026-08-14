@@ -31,4 +31,14 @@ describe('PromptInjectionBox', () => {
     expect(screen.getByLabelText('Prompt')).toBeDisabled();
     expect(screen.getByRole('button', { name: /send/i })).toBeDisabled();
   });
+
+  it('uses the placeholder prop when provided and not disabled', () => {
+    render(<PromptInjectionBox sessionId="sess-1" disabled={false} placeholder="What's next?" onSend={() => {}} />);
+    expect(screen.getByPlaceholderText("What's next?")).toBeInTheDocument();
+  });
+
+  it('falls back to the default placeholder when none is provided', () => {
+    render(<PromptInjectionBox sessionId="sess-1" disabled={false} onSend={() => {}} />);
+    expect(screen.getByPlaceholderText('Send a follow-up prompt')).toBeInTheDocument();
+  });
 });
