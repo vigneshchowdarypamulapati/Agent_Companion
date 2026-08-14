@@ -24,7 +24,9 @@ interface PubSubEnvelope {
 const STATUS_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], SessionStatus>> = {
   permission_request: 'waiting_permission',
   permission_resolved: 'running',
-  turn_complete: 'running',
+  assistant_text: 'running',
+  tool_use: 'running',
+  turn_complete: 'waiting_input',
   stopped: 'stopped',
   error: 'stopped',
 };
@@ -37,6 +39,7 @@ const STATUS_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], SessionStatus>>
  */
 const NOTIFICATION_TITLE_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], string>> = {
   permission_request: 'Needs your permission',
+  turn_complete: 'Claude is waiting for you',
   error: 'Session error',
   stopped: 'Session stopped',
 };
@@ -243,7 +246,8 @@ export class ConnectionHub {
       if (!session) return;
       const devices = await this.store.getDevicesForUser(userId);
       const targets = devices.filter((d) => d.type === 'browser' && d.pushSubscription);
-      const payload: PushPayload = { title, body: session.projectPath, url: `/sessions/${sessionId}` };
+      const body = eventType === 'turn_complete' ? await this.lastAssistantTextOrProjectPath(sessionId, session.projectPath) : session.projectPath;
+      const payload: PushPayload = { title, body, url: `/sessions/${sessionId}` };
       await Promise.all(
         targets.map(async (device) => {
           try {
@@ -259,6 +263,13 @@ export class ConnectionHub {
     } catch {
       // Push notification delivery is best-effort and must never affect event routing.
     }
+  }
+
+  private async lastAssistantTextOrProjectPath(sessionId: string, projectPath: string): Promise<string> {
+    const last = await this.store.getLastEventOfType(sessionId, 'assistant_text');
+    if (!last || last.event.type !== 'assistant_text') return projectPath;
+    const text = last.event.text;
+    return text.length > 140 ? `${text.slice(0, 140)}…` : text;
   }
 
   private dispatchLocal(envelope: PubSubEnvelope): void {

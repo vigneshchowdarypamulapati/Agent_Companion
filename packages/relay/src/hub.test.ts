@@ -112,6 +112,51 @@ describe('ConnectionHub', () => {
     expect(events).toHaveLength(2);
   });
 
+  it('sets status to waiting_input on turn_complete, and back to running on the next assistant_text', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon' });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 2 });
+    expect((await store.getSession('sess-1'))?.status).toBe('waiting_input');
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'assistant_text',
+      sessionId: 'sess-1',
+      text: 'Starting the next task…',
+      at: 3,
+    });
+    expect((await store.getSession('sess-1'))?.status).toBe('running');
+  });
+
+  it('sets status back to running on tool_use after turn_complete', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon' });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 2 });
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'tool_use',
+      sessionId: 'sess-1',
+      toolName: 'Bash',
+      input: {},
+      at: 3,
+    });
+    expect((await store.getSession('sess-1'))?.status).toBe('running');
+  });
+
   it('routes a command from a browser to the daemon connection that owns the session', async () => {
     const store = new InMemoryStore();
     const hub = await startedHub(store);
@@ -683,7 +728,68 @@ describe('ConnectionHub', () => {
     expect(pushSender.sent.map((s) => s.payload.title)).toEqual(['Session error', 'Session stopped']);
   });
 
-  it('does not send a push notification for a non-qualifying event type', async () => {
+  it('sends a push notification on turn_complete with the last assistant message as the body', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const userId = 'user-1';
+    const browserDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    await store.setPushSubscription(browserDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'assistant_text',
+      sessionId: 'sess-1',
+      text: 'Task 1 is done. Want me to continue with task 2, or something else?',
+      at: 2,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 3 });
+
+    const turnCompletePush = pushSender.sent.find((s) => s.payload.title === 'Claude is waiting for you');
+    expect(turnCompletePush?.payload).toMatchObject({
+      title: 'Claude is waiting for you',
+      body: 'Task 1 is done. Want me to continue with task 2, or something else?',
+      url: '/sessions/sess-1',
+    });
+  });
+
+  it('truncates a long assistant message to 140 characters in the push body', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const userId = 'user-1';
+    const browserDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    await store.setPushSubscription(browserDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
+    const longText = 'a'.repeat(200);
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'assistant_text',
+      sessionId: 'sess-1',
+      text: longText,
+      at: 2,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 3 });
+
+    const turnCompletePush = pushSender.sent.find((s) => s.payload.title === 'Claude is waiting for you');
+    expect(turnCompletePush?.payload.body).toBe(`${'a'.repeat(140)}…`);
+  });
+
+  it('falls back to the project path in the push body when there is no assistant_text event', async () => {
     const store = new InMemoryStore();
     const pushSender = fakePushSender();
     const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
@@ -700,6 +806,28 @@ describe('ConnectionHub', () => {
       at: 1,
     });
     await hub.routeFromDaemon(daemon, 'sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 2 });
+
+    const turnCompletePush = pushSender.sent.find((s) => s.payload.title === 'Claude is waiting for you');
+    expect(turnCompletePush?.payload.body).toBe('/tmp/project');
+  });
+
+  it('does not send a push notification for a non-qualifying event type', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const userId = 'user-1';
+    const browserDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    await store.setPushSubscription(browserDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'command_failed', sessionId: 'sess-1', message: 'boom', at: 2 });
 
     expect(pushSender.sent).toHaveLength(0);
   });
