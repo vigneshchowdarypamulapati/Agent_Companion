@@ -22,14 +22,17 @@ development, copy the example env file and fill in both:
 `process.loadEnvFile()` — no local database engine to install, and no
 extra flags needed for `npm start` or `npm test`.
 
-`npm test` truncates every table in whatever database `DATABASE_URL`
-points at before each test case — dev and test intentionally share one
-Neon project at this stage, so running the test suite wipes any paired
-devices/sessions you created locally. If that becomes disruptive, Neon's
-branching (free, instant, copy-on-write) can split dev and test into
-separate databases without any code change — just point
-`packages/relay/.env` at a different branch's connection string for one
-of them.
+`postgres-store.test.ts` truncates every table before each test case, so it
+never reads `DATABASE_URL` for that connection — it reads a separate
+**`COMPANION_TEST_DATABASE_URL`** instead, and refuses to run (fails fast,
+without connecting to any database) if that variable is unset, or if it's
+byte-identical to `DATABASE_URL`. This is deliberate: a stale or
+misconfigured `DATABASE_URL` in some shell must never be able to wipe real
+data just because the test suite ran. Provision an isolated Neon branch for
+testing (Neon's branching is free, instant, and copy-on-write — see
+`docs/superpowers/specs/2026-08-11-persistent-storage-design.md`) and set
+`COMPANION_TEST_DATABASE_URL` in `packages/relay/.env` to that branch's
+connection string before running `npm test`.
 
 Then:
 
