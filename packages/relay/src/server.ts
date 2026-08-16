@@ -3,7 +3,8 @@ import cors from 'cors';
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer } from 'ws';
 import {
-  RelayMessage,
+  DaemonToRelayMessage,
+  BrowserToRelayMessage,
   RequestPairingCodeRequest,
   ClaimPairingRequest,
   PollPairingRequest,
@@ -454,14 +455,23 @@ export async function createRelayServer({
         ws.on('message', (raw) => {
           void (async () => {
             try {
-              const parsed = RelayMessage.parse(JSON.parse(raw.toString()));
-              if (parsed.kind === 'event' && device.type === 'daemon') {
-                await hub.routeFromDaemon(connection, parsed.sessionId, parsed.event);
-              } else if (parsed.kind === 'command' && device.type === 'browser') {
-                await hub.routeFromBrowser(connection, parsed.sessionId, parsed.command);
+              const rawFrame = JSON.parse(raw.toString());
+              if (device.type === 'daemon') {
+                const parsed = DaemonToRelayMessage.parse(rawFrame);
+                if (parsed.kind === 'event') {
+                  await hub.routeFromDaemon(connection, parsed.sessionId, parsed.event);
+                }
+                // 'command_ack' and 'rpc_response' are validated but not yet routed anywhere —
+                // command acknowledgment and RPC are later tasks.
+              } else {
+                const parsed = BrowserToRelayMessage.parse(rawFrame);
+                if (parsed.kind === 'command') {
+                  await hub.routeFromBrowser(connection, parsed.sessionId, parsed.command);
+                }
+                // 'rpc_request' is validated but not yet routed anywhere — RPC is a later task.
               }
             } catch (err) {
-              // Diagnostic frame — deliberately not part of the RelayMessage schema.
+              // Diagnostic frame — deliberately not part of any of the directional wire-protocol schemas.
               const message = err instanceof Error ? err.message : String(err);
               try {
                 ws.send(JSON.stringify({ kind: 'error', message }));

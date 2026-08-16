@@ -65,7 +65,7 @@ async function startSession(
     JSON.stringify({
       kind: 'event',
       sessionId,
-      seq: 0,
+      deliverySeq: 1,
       event: { type: 'session_started', sessionId, projectPath, at: Date.now() },
     })
   );
@@ -113,8 +113,9 @@ describe('relay server', () => {
       JSON.stringify({
         kind: 'event',
         sessionId: 'sess-1',
-        // The relay assigns the authoritative seq; the inbound value is ignored.
-        seq: 0,
+        // The daemon assigns its own deliverySeq; the relay assigns the authoritative store
+        // seq separately once it persists the event (asserted on the forwarded browser copy).
+        deliverySeq: 1,
         event: {
           type: 'session_started',
           sessionId: 'sess-1',
@@ -141,7 +142,7 @@ describe('relay server', () => {
 
     const daemonReceived = waitForMessage(daemonWs);
     browserWs.send(
-      JSON.stringify({ kind: 'command', sessionId: 'sess-1', command: { type: 'pause', sessionId: 'sess-1' } })
+      JSON.stringify({ kind: 'command', sessionId: 'sess-1', commandId: 'cmd-1', command: { type: 'pause', sessionId: 'sess-1' } })
     );
     expect(await daemonReceived).toMatchObject({ kind: 'command', sessionId: 'sess-1' });
   });
@@ -716,7 +717,7 @@ describe('relay server', () => {
       JSON.stringify({
         kind: 'event',
         sessionId: 'sess-1',
-        seq: 0,
+        deliverySeq: 1,
         event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/secret', at: Date.now() },
       })
     );
@@ -842,6 +843,7 @@ describe('relay server', () => {
       JSON.stringify({
         kind: 'command',
         sessionId: 'nope',
+        commandId: 'cmd-1',
         command: { type: 'pause', sessionId: 'nope' },
       })
     );
@@ -866,7 +868,7 @@ describe('relay server', () => {
       JSON.stringify({
         kind: 'event',
         sessionId: 'sess-1',
-        seq: 0,
+        deliverySeq: 1,
         event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: Date.now() },
       })
     );
@@ -924,7 +926,7 @@ describe('relay server', () => {
       JSON.stringify({
         kind: 'event',
         sessionId: 'sess-1',
-        seq: 0,
+        deliverySeq: 1,
         event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: Date.now() },
       })
     );
@@ -938,7 +940,7 @@ describe('relay server', () => {
       JSON.stringify({
         kind: 'event',
         sessionId: 'sess-1',
-        seq: 0,
+        deliverySeq: 1,
         event: { type: 'stopped', sessionId: 'sess-1', at: Date.now() },
       })
     );
@@ -971,7 +973,7 @@ describe('relay server', () => {
       JSON.stringify({
         kind: 'event',
         sessionId: 'sess-1',
-        seq: 0,
+        deliverySeq: 1,
         event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: Date.now() },
       })
     );
@@ -1246,7 +1248,7 @@ describe('relay server', () => {
       JSON.stringify({
         kind: 'event',
         sessionId: 'sess-1',
-        seq: 0,
+        deliverySeq: 1,
         event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: Date.now() },
       })
     );
@@ -1257,7 +1259,7 @@ describe('relay server', () => {
       JSON.stringify({
         kind: 'event',
         sessionId: 'sess-1',
-        seq: 0,
+        deliverySeq: 1,
         event: { type: 'stopped', sessionId: 'sess-1', at: Date.now() },
       })
     );

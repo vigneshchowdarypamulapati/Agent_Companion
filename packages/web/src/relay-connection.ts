@@ -1,4 +1,4 @@
-import { RelayMessage, type Command, type SessionEvent } from '@companion/protocol';
+import { RelayToBrowserMessage, type BrowserToRelayMessage, type Command, type SessionEvent } from '@companion/protocol';
 
 export interface RelayConnectionOptions {
   url: string;
@@ -77,7 +77,10 @@ export class RelayConnection {
       this.onLog(`Dropping command ${command.type} for session ${sessionId}: not connected to relay`);
       return;
     }
-    const message: RelayMessage = { kind: 'command', sessionId, command };
+    // Client-generated so the relay/daemon can echo it back on a future command_ack; not yet
+    // consumed by anything (command acknowledgment is a later task).
+    const commandId = crypto.randomUUID();
+    const message: BrowserToRelayMessage = { kind: 'command', sessionId, commandId, command };
     this.ws.send(JSON.stringify(message));
   }
 
@@ -116,9 +119,9 @@ export class RelayConnection {
     });
 
     ws.addEventListener('message', (messageEvent) => {
-      let parsed: RelayMessage;
+      let parsed: RelayToBrowserMessage;
       try {
-        parsed = RelayMessage.parse(JSON.parse(String(messageEvent.data)));
+        parsed = RelayToBrowserMessage.parse(JSON.parse(String(messageEvent.data)));
       } catch {
         this.onLog('Received an unparseable frame from the relay');
         return;
@@ -126,6 +129,8 @@ export class RelayConnection {
       if (parsed.kind === 'event') {
         this.onEvent({ sessionId: parsed.sessionId, seq: parsed.seq, event: parsed.event });
       }
+      // 'command_ack' and 'rpc_response' are not yet handled — command acknowledgment and RPC
+      // are later tasks.
     });
 
     ws.addEventListener('close', (closeEvent) => {

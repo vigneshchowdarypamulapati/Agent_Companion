@@ -90,7 +90,7 @@ describe('daemon <-> relay integration', () => {
     expect(typeof forwarded.seq).toBe('number');
 
     const command: Command = { type: 'pause', sessionId: 'sess-1' };
-    browserWs.send(JSON.stringify({ kind: 'command', sessionId: 'sess-1', command }));
+    browserWs.send(JSON.stringify({ kind: 'command', sessionId: 'sess-1', commandId: 'cmd-1', command }));
 
     await expect.poll(() => receivedCommands.length, { timeout: 2000 }).toBeGreaterThan(0);
     expect(receivedCommands[0]).toEqual(command);

@@ -1,5 +1,5 @@
 import { PushSubscriptionPayload } from '@companion/protocol';
-import type { Command, SessionEvent, SessionStatus } from '@companion/protocol';
+import type { Command, RelayToBrowserMessage, RelayToDaemonMessage, SessionEvent, SessionStatus } from '@companion/protocol';
 import type { Store } from './store.js';
 import type { PubSub } from './pubsub.js';
 import type { PushPayload, PushSender } from './push-sender.js';
@@ -12,9 +12,21 @@ export interface Connection {
   close(): void;
 }
 
+/**
+ * The hub's internal pub/sub envelope, distinct from the four directional wire-protocol unions
+ * in @companion/protocol. It's not itself a wire message in one direction — `dispatchLocal`
+ * fans an 'event' out to every browser connection (the same shape as RelayToBrowserMessage's
+ * `event` variant) and routes a 'command' to the one daemon connection that owns the session
+ * (the same shape as RelayToDaemonMessage's `command` variant), so no single directional union
+ * describes this type on its own. Rather than hand-duplicating those two field lists, they're
+ * derived from the protocol types with `Extract` — this stays in sync automatically if either
+ * variant's shape changes, without coupling RelayHubMessage to the unrelated variants
+ * (command_ack, rpc_request, rpc_response) that appear in those unions but never flow through
+ * the hub's internal envelope.
+ */
 export type RelayHubMessage =
-  | { kind: 'event'; sessionId: string; seq: number; event: SessionEvent }
-  | { kind: 'command'; sessionId: string; command: Command };
+  | Extract<RelayToBrowserMessage, { kind: 'event' }>
+  | Extract<RelayToDaemonMessage, { kind: 'command' }>;
 
 interface PubSubEnvelope {
   userId: string;

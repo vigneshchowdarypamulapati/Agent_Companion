@@ -63,7 +63,32 @@ describe('RelayClient', () => {
     const received = waitForMessage(serverSocket);
     const event: SessionEvent = { type: 'turn_complete', sessionId: 'sess-1', at: Date.now() };
     client!.sendEvent('sess-1', event);
-    expect(await received).toMatchObject({ kind: 'event', sessionId: 'sess-1', event });
+    expect(await received).toMatchObject({ kind: 'event', sessionId: 'sess-1', deliverySeq: 1, event });
+  });
+
+  it('assigns increasing deliverySeq values across successive sent events', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    const serverConnected = waitForConnection(wss);
+    const clientOpened = new Promise<void>((resolve) => {
+      client = new RelayClient({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 'test-token',
+        onCommand: () => {},
+        onOpen: () => resolve(),
+      });
+    });
+    client!.connect();
+    const [serverSocket] = await Promise.all([serverConnected, clientOpened]);
+
+    const firstReceived = waitForMessage(serverSocket);
+    client!.sendEvent('sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: Date.now() });
+    expect((await firstReceived).deliverySeq).toBe(1);
+
+    const secondReceived = waitForMessage(serverSocket);
+    client!.sendEvent('sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: Date.now() });
+    expect((await secondReceived).deliverySeq).toBe(2);
   });
 
   it('invokes onCommand when the server sends a command frame', async () => {

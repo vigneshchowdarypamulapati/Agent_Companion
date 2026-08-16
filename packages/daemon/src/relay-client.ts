@@ -1,5 +1,5 @@
 import { WebSocket } from 'ws';
-import { RelayMessage, type Command, type SessionEvent } from '@companion/protocol';
+import { RelayToDaemonMessage, type Command, type DaemonToRelayMessage, type SessionEvent } from '@companion/protocol';
 
 export interface RelayClientOptions {
   url: string;
@@ -35,6 +35,15 @@ export class RelayClient {
   private closed = true;
   private reconnectTimer: NodeJS.Timeout | undefined;
   private openConfirmTimer: NodeJS.Timeout | undefined;
+  /**
+   * Daemon-assigned delivery sequence, incremented per event sent. This is distinct from the
+   * relay's store-assigned `seq` (which only the relay can assign, once it durably persists the
+   * event) — it exists so the relay can eventually ack "highest contiguous deliverySeq stored"
+   * and the daemon can redeliver from there. Redelivery/buffering itself is a later task; today
+   * this counter just replaces the previous meaningless `seq: 0` placeholder with a real,
+   * monotonically increasing value.
+   */
+  private deliverySeq = 0;
 
   constructor(options: RelayClientOptions) {
     this.url = options.url;
@@ -65,7 +74,8 @@ export class RelayClient {
       this.onLog(`Dropping event ${event.type} for session ${sessionId}: not connected to relay`);
       return;
     }
-    const message: RelayMessage = { kind: 'event', sessionId, seq: 0, event };
+    this.deliverySeq += 1;
+    const message: DaemonToRelayMessage = { kind: 'event', sessionId, deliverySeq: this.deliverySeq, event };
     this.ws.send(JSON.stringify(message));
   }
 
@@ -106,9 +116,9 @@ export class RelayClient {
     });
 
     ws.on('message', (raw) => {
-      let parsed: RelayMessage;
+      let parsed: RelayToDaemonMessage;
       try {
-        parsed = RelayMessage.parse(JSON.parse(raw.toString()));
+        parsed = RelayToDaemonMessage.parse(JSON.parse(raw.toString()));
       } catch {
         this.onLog('Received an unparseable frame from the relay');
         return;
@@ -116,6 +126,8 @@ export class RelayClient {
       if (parsed.kind === 'command') {
         this.onCommand(parsed.command);
       }
+      // 'event_ack' and 'rpc_request' are not yet handled — buffering/redelivery and RPC
+      // dispatch are later tasks (see the deliverySeq comment above and the brief).
     });
 
     ws.on('close', () => {

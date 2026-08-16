@@ -60,7 +60,9 @@ describe('RelayConnection', () => {
     });
     const command: Command = { type: 'pause', sessionId: 'sess-1' };
     connection!.sendCommand('sess-1', command);
-    expect(await received).toMatchObject({ kind: 'command', sessionId: 'sess-1', command });
+    const receivedMessage = await received;
+    expect(receivedMessage).toMatchObject({ kind: 'command', sessionId: 'sess-1', command });
+    expect(typeof receivedMessage.commandId).toBe('string');
   });
 
   it('invokes onEvent when the server sends an event frame', async () => {
