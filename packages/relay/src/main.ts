@@ -5,6 +5,7 @@ import { createDbClient } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { PostgresStore } from './postgres-store.js';
 import { ClerkIdentityVerifier } from './identity-verifier.js';
+import { resolveTrustProxyHops } from './trust-proxy.js';
 
 // .env isn't checked in (it holds a real Neon connection string). Loading
 // it here means `node dist/main.js` and `npm start` both just work locally
@@ -38,19 +39,12 @@ if (!CLERK_SECRET_KEY) {
   );
 }
 
-let trustProxyHops = 0;
-const trustProxyRaw = process.env.COMPANION_RELAY_TRUST_PROXY;
-if (trustProxyRaw !== undefined) {
-  const parsed = Number(trustProxyRaw);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error(
-      'COMPANION_RELAY_TRUST_PROXY must be a non-negative integer (the number of reverse ' +
-        'proxies/load balancers in front of this relay) if set at all. Leave it unset if ' +
-        'there is no proxy or the topology is unknown.'
-    );
-  }
-  trustProxyHops = parsed;
-}
+// See trust-proxy.ts for why there is no safe default and why production
+// requires this to be set explicitly.
+const trustProxyHops = resolveTrustProxyHops(
+  process.env.COMPANION_RELAY_TRUST_PROXY,
+  process.env.NODE_ENV
+);
 
 let corsOrigins: string[] | undefined;
 const corsOriginsRaw = process.env.COMPANION_RELAY_CORS_ORIGIN;

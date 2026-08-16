@@ -114,9 +114,38 @@ export async function createRelayServer({
   const registerBrowserAccountLimiter = new RateLimiter(10, ONE_HOUR_MS);
 
   const app = express();
-  app.set('trust proxy', trustProxyHops ?? 0);
+  const resolvedTrustProxyHops = trustProxyHops ?? 0;
+  app.set('trust proxy', resolvedTrustProxyHops);
   app.use(cors({ origin: corsOrigins ?? DEFAULT_CORS_ORIGINS }));
   app.use(express.json());
+
+  // Catches the operator who deployed behind a proxy but left (or set)
+  // COMPANION_RELAY_TRUST_PROXY at 0: X-Forwarded-For is arriving but
+  // nothing is configured to trust it, so req.ip is silently wrong and
+  // every IP-keyed rate limiter is one shared bucket for all clients (see
+  // main.ts / trust-proxy.ts for the full story). Logged once per server
+  // instance — in a real deployment that's once per process — not once per
+  // request, since a per-request log line would itself be a trivial DoS
+  // amplifier for whoever is sending the header.
+  let hasWarnedAboutUntrustedForwardedFor = false;
+  app.use((req, _res, next) => {
+    if (
+      resolvedTrustProxyHops === 0 &&
+      !hasWarnedAboutUntrustedForwardedFor &&
+      req.header('x-forwarded-for') !== undefined
+    ) {
+      hasWarnedAboutUntrustedForwardedFor = true;
+      console.warn(
+        'X-Forwarded-For header received but COMPANION_RELAY_TRUST_PROXY is 0 (or unset): ' +
+          'this relay trusts no proxy hops, so req.ip is the raw socket address, not this ' +
+          'header. If this relay is actually deployed behind a proxy/load balancer, set ' +
+          'COMPANION_RELAY_TRUST_PROXY to the real hop count now — every IP-keyed rate ' +
+          'limiter is currently collapsed into a single shared bucket for all clients. ' +
+          '(This warning is logged once per process and then suppressed.)'
+      );
+    }
+    next();
+  });
 
   app.post(
     '/pairing/request-code',

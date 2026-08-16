@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { WebSocket } from 'ws';
 import { createHash } from 'node:crypto';
@@ -512,6 +512,33 @@ describe('relay server', () => {
       .set('X-Forwarded-For', '5.6.7.8')
       .send({ deviceName: 'x' });
     expect(stillBlocked.status).toBe(429);
+  });
+
+  it('warns once when X-Forwarded-For arrives while trust proxy hop count is 0, and not at all without the header', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+      // trustProxyHops omitted — defaults to 0, same as the default-unset case above.
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    // No X-Forwarded-For header at all: never warns.
+    await request(httpServer).post('/pairing/request-code').send({ deviceName: 'x' });
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    // Repeated requests carrying the header: warns exactly once, not per request.
+    for (let i = 0; i < 5; i++) {
+      await request(httpServer)
+        .post('/pairing/request-code')
+        .set('X-Forwarded-For', '1.2.3.4')
+        .send({ deviceName: 'x' });
+    }
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toMatch(/X-Forwarded-For/);
+
+    warnSpy.mockRestore();
   });
 
   // --- CORS ---

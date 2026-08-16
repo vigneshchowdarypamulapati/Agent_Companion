@@ -61,11 +61,20 @@ today and `GET /push/vapid-public-key` returns `404`.
 
 Set `COMPANION_RELAY_TRUST_PROXY` to the number of reverse proxies/load
 balancers in front of this relay in your deployment (commonly `1` for a
-single LB, like most PaaS setups). It's optional — unset (or `0`) means
-"trust nothing," the safe default when there's no proxy or the topology is
-unknown — but if it is set, the relay fails fast at startup if the value
-isn't a non-negative integer. See "Rate limits" below for why getting this
-right matters.
+single LB, like most PaaS setups). Outside production it's optional — unset
+(or `0`) means "trust nothing," the default when there's no proxy or the
+topology is unknown. **In production (`NODE_ENV=production`) it is
+required: the relay refuses to start if it's unset.** There is no safe
+default to fall back to — `0` behind a real proxy collapses every client
+into the proxy's single IP (roughly 80 unauthenticated requests then lock
+out *every* user's pairing/registration), while a non-zero value with no
+proxy in front lets any caller spoof `X-Forwarded-For` and bypass IP-keyed
+rate limiting entirely. Whenever set (in any environment), the relay also
+fails fast at startup if the value isn't a non-negative integer. If a
+request arrives carrying `X-Forwarded-For` while the effective hop count is
+`0`, the relay logs one warning (not per-request) — a sign the deployment
+is behind a proxy that hasn't been declared. See "Rate limits" below for
+why getting this right matters.
 
 Set `COMPANION_RELAY_CORS_ORIGIN` to a comma-separated list of origins the
 web app is served from, so browsers are allowed to call this relay
@@ -181,9 +190,9 @@ The counters live in this process, like `PubSub` — see "Current scope" below.
   `trust proxy` setting is configured with the real hop count — set
   `COMPANION_RELAY_TRUST_PROXY` accordingly before deploying behind one, or
   this limit (and the register-browser pre-auth guard above) will collapse
-  onto a single shared bucket for every client. It defaults to trusting
-  nothing, which is safe (if overly strict) when there's no proxy or the
-  topology is unknown.
+  onto a single shared bucket for every client. Outside production it
+  defaults to trusting nothing; in production the relay requires this to be
+  set explicitly and refuses to start otherwise (see above).
 
 ## WebSocket
 
