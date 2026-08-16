@@ -1107,4 +1107,136 @@ describe('ConnectionHub', () => {
       vi.useRealTimers();
     }
   });
+
+  // --- event_ack: durability-gated, gap-tolerant delivery acking ---
+
+  it('sends event_ack with the deliverySeq once the event is durably stored', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon' });
+
+    await hub.routeFromDaemon(
+      daemon,
+      'sess-1',
+      { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: 1 },
+      1
+    );
+
+    const acks = daemon.sent.filter((m) => m.kind === 'event_ack');
+    expect(acks).toEqual([{ kind: 'event_ack', deliverySeq: 1 }]);
+  });
+
+  it('does not send event_ack for an event routed without a deliverySeq (pre-Task-3 call sites)', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon' });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+
+    expect(daemon.sent.filter((m) => m.kind === 'event_ack')).toEqual([]);
+  });
+
+  it('advances the ack across a deliverySeq gap instead of stalling, simulating an evicted buffer entry', async () => {
+    // Regression case for the bug a reviewer caught in this task: acking "the highest
+    // *contiguous* deliverySeq" would permanently wedge at 1 here, since 2 is never sent (it
+    // was evicted from the daemon's OutboundBuffer before ever reaching the relay — see
+    // outbound-buffer.ts). The relay never receives a deliverySeq of 2 for this connection at
+    // all; deliverySeq 3 is simply the next value the daemon actually sends.
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon' });
+
+    await hub.routeFromDaemon(
+      daemon,
+      'sess-1',
+      { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: 1 },
+      1
+    );
+    // deliverySeq 2 never arrives — the daemon dropped it.
+    await hub.routeFromDaemon(
+      daemon,
+      'sess-1',
+      { type: 'assistant_text', sessionId: 'sess-1', text: 'hi', at: 2 },
+      3
+    );
+
+    const acks = daemon.sent.filter((m) => m.kind === 'event_ack');
+    expect(acks).toEqual([
+      { kind: 'event_ack', deliverySeq: 1 },
+      { kind: 'event_ack', deliverySeq: 3 },
+    ]);
+  });
+
+  it('does not advance (or send) the ack when the store write fails', async () => {
+    const store = new InMemoryStore();
+    const failingStore = Object.create(store) as typeof store;
+    let shouldFail = false;
+    failingStore.appendSessionEvent = async (...args: Parameters<typeof store.appendSessionEvent>) => {
+      if (shouldFail) throw new Error('store unavailable');
+      return store.appendSessionEvent(...args);
+    };
+    const hub = await startedHub(failingStore);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon' });
+
+    await hub.routeFromDaemon(
+      daemon,
+      'sess-1',
+      { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: 1 },
+      1
+    );
+    shouldFail = true;
+    await expect(
+      hub.routeFromDaemon(daemon, 'sess-1', { type: 'assistant_text', sessionId: 'sess-1', text: 'hi', at: 2 }, 2)
+    ).rejects.toThrow('store unavailable');
+
+    // Only the first (successful) store write produced an ack; the failed second one produced none.
+    expect(daemon.sent.filter((m) => m.kind === 'event_ack')).toEqual([{ kind: 'event_ack', deliverySeq: 1 }]);
+
+    // A later event that does succeed still advances the ack past the failed one — a store
+    // failure only withholds the ack for that one event, it doesn't wedge the connection.
+    shouldFail = false;
+    await hub.routeFromDaemon(
+      daemon,
+      'sess-1',
+      { type: 'assistant_text', sessionId: 'sess-1', text: 'hi again', at: 3 },
+      3
+    );
+    expect(daemon.sent.filter((m) => m.kind === 'event_ack')).toEqual([
+      { kind: 'event_ack', deliverySeq: 1 },
+      { kind: 'event_ack', deliverySeq: 3 },
+    ]);
+  });
+
+  it('tracks ack state per connection object, so a reconnected daemon is not assumed to start at deliverySeq 1', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const firstConnection = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon' });
+
+    await hub.routeFromDaemon(
+      firstConnection,
+      'sess-1',
+      { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: 1 },
+      1
+    );
+    hub.unregister(firstConnection);
+
+    // A reconnect creates a brand-new Connection object (see server.ts) whose replay can
+    // legitimately begin at any deliverySeq already assigned by the daemon's still-running
+    // counter, e.g. 50 — not 1.
+    const reconnected = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon' });
+    hub.register(reconnected);
+    await hub.routeFromDaemon(
+      reconnected,
+      'sess-1',
+      { type: 'assistant_text', sessionId: 'sess-1', text: 'hi', at: 2 },
+      50
+    );
+
+    expect(reconnected.sent.filter((m) => m.kind === 'event_ack')).toEqual([{ kind: 'event_ack', deliverySeq: 50 }]);
+  });
 });

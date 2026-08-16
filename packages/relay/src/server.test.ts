@@ -850,6 +850,157 @@ describe('relay server', () => {
     expect(await received).toMatchObject({ kind: 'error', message: expect.stringContaining('Unknown session') });
   });
 
+  it('replies with a diagnostic error frame for non-JSON text and survives it', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const browserWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${browserToken}`);
+    sockets.push(browserWs);
+    await waitForOpen(browserWs);
+
+    const received = waitForMessage(browserWs);
+    browserWs.send('not valid json');
+    expect(await received).toMatchObject({ kind: 'error' });
+
+    // The connection survives — a follow-up valid message still gets routed normally.
+    const received2 = waitForMessage(browserWs);
+    browserWs.send(
+      JSON.stringify({ kind: 'command', sessionId: 'nope', commandId: 'cmd-1', command: { type: 'pause', sessionId: 'nope' } })
+    );
+    expect(await received2).toMatchObject({ kind: 'error', message: expect.stringContaining('Unknown session') });
+  });
+
+  it('replies with a diagnostic error frame for a syntactically valid but unrecognized message kind', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const browserWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${browserToken}`);
+    sockets.push(browserWs);
+    await waitForOpen(browserWs);
+
+    const received = waitForMessage(browserWs);
+    browserWs.send(JSON.stringify({ kind: 'not_a_real_kind', foo: 'bar' }));
+    expect(await received).toMatchObject({ kind: 'error' });
+  });
+
+  // --- event_ack: daemon receives an ack once its event is durably stored ---
+
+  it('sends event_ack over the wire once the daemon-sent event is durably stored', async () => {
+    const store = new InMemoryStore();
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
+    const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
+    sockets.push(daemonWs);
+    await waitForOpen(daemonWs);
+
+    const ack = waitForMessage(daemonWs);
+    daemonWs.send(
+      JSON.stringify({
+        kind: 'event',
+        sessionId: 'sess-1',
+        deliverySeq: 1,
+        event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: Date.now() },
+      })
+    );
+    expect(await ack).toEqual({ kind: 'event_ack', deliverySeq: 1 });
+  });
+
+  // --- maxPayload: an oversized frame is rejected, not crashed on ---
+
+  it('rejects a frame larger than maxPayload without crashing the connection or the process', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+      maxPayloadBytes: 1024,
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const browserWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${browserToken}`);
+    sockets.push(browserWs);
+    browserWs.on('error', () => {});
+    await waitForOpen(browserWs);
+
+    const closed = new Promise<void>((resolve) => browserWs.once('close', () => resolve()));
+    browserWs.send(JSON.stringify({ kind: 'rpc_request', requestId: '1', method: 'x', params: 'x'.repeat(2000) }));
+    await closed;
+
+    // The relay process is still alive and serving other connections.
+    const res = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'x' });
+    expect(res.status).toBe(201);
+  });
+
+  // --- heartbeat: an unresponsive connection is terminated via the same cleanup path as a normal close ---
+
+  it("terminates a connection that stops answering pings, and runs the daemon's normal disconnect cleanup", async () => {
+    const store = new InMemoryStore();
+    httpServer = await createRelayServer({
+      store,
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+      heartbeatIntervalMs: 1000,
+      heartbeatMaxMissedPongs: 2,
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
+
+    // autoPong: false — this socket receives ping frames but never answers them, simulating a
+    // half-open connection (the transport looks alive; the peer never actually responds).
+    const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`, { autoPong: false });
+    sockets.push(daemonWs);
+    daemonWs.on('error', () => {});
+    await waitForOpen(daemonWs);
+    daemonWs.send(
+      JSON.stringify({
+        kind: 'event',
+        sessionId: 'sess-1',
+        deliverySeq: 1,
+        event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: Date.now() },
+      })
+    );
+    await expect.poll(async () => (await store.getSession('sess-1'))?.id, { timeout: 2000 }).toBe('sess-1');
+
+    vi.useFakeTimers();
+    try {
+      const closeCode = new Promise<number>((resolve) => daemonWs.once('close', (code) => resolve(code)));
+      // 3 heartbeat ticks: 2 misses confirmed, terminated on the 3rd — see
+      // DEFAULT_HEARTBEAT_MAX_MISSED_PONGS's doc comment in server.ts for why it's 3, not 2.
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await closeCode).toBe(1006);
+
+      // Same cleanup path as a normal close, including hub.ts's daemon-disconnect grace period
+      // (default 30s): advancing past it marks the orphaned session stopped, exactly as an
+      // ordinary daemon disconnect would.
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect.poll(async () => (await store.getSession('sess-1'))?.status).toBe('stopped');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // --- GET /sessions/active ---
 
   it("returns the authenticated device's active sessions", async () => {

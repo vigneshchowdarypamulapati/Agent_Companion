@@ -1,7 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import { createServer, type Server } from 'node:http';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, type WebSocket } from 'ws';
 import {
   DaemonToRelayMessage,
   BrowserToRelayMessage,
@@ -54,9 +54,50 @@ export interface RelayServerOptions {
    * Defaults to the Vite dev server's default origin, matching the relay's own
    * default local-dev port pairing in .env.example. */
   corsOrigins?: string[];
+  /** Overrides for the WS heartbeat/payload knobs below — see their doc comments for the
+   * production defaults and the reasoning behind them. Exists so tests can run the heartbeat
+   * loop on a short fake-timer interval and probe maxPayload without sending a real 1 MiB
+   * frame, without changing what actually ships. */
+  heartbeatIntervalMs?: number;
+  heartbeatMaxMissedPongs?: number;
+  maxPayloadBytes?: number;
 }
 
 const DEFAULT_CORS_ORIGINS = ['http://localhost:5173'];
+
+/**
+ * How often the relay pings every open connection (daemon or browser), using the `ws` library's
+ * native ping/pong control frames — not an application-level "heartbeat" message — so a
+ * TCP-level-open-but-actually-dead socket (a laptop that slept, a phone's radio going silent
+ * without a clean FIN, a NAT/proxy that dropped the mapping) is detected instead of silently
+ * swallowing every event/command sent to it. 30s is short enough that a dead connection doesn't
+ * sit undetected for an unreasonable time (see DEFAULT_HEARTBEAT_MAX_MISSED_PONGS for the
+ * resulting worst-case detection latency, which stacks with hub.ts's own ~30s daemon-disconnect
+ * grace period before an orphaned session is actually marked stopped), and long enough that
+ * battery-conscious mobile radios/background timers aren't kept awake by constant traffic.
+ */
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * How many consecutive ping cycles may pass with no pong before a connection is terminated. 1
+ * would false-positive on a single delayed pong (a brief GC pause, a momentary radio hiccup on
+ * mobile). With this loop's structure — each tick checks whether the *previous* ping ever got a
+ * pong, then sends the next one — confirming N misses takes N+1 ticks (the first ping needs a
+ * full interval to even be judged late), so 2 misses bounds worst-case detection at 3x the
+ * interval (~90s here) after the connection actually went dead: tolerant enough not to kill a
+ * flaky-but-alive mobile connection, bounded enough not to leave a truly dead one undetected for
+ * long.
+ */
+const DEFAULT_HEARTBEAT_MAX_MISSED_PONGS = 2;
+
+/**
+ * Upper bound on a single WS frame. 1 MiB comfortably fits the largest realistic session event
+ * — a `tool_use`/`tool_result` carrying a big file diff or command output is sized in the
+ * daemon's own OutboundBuffer doc comments (outbound-buffer.ts) as "a few hundred KB" at most —
+ * while still bounding how much memory/CPU a single malicious or buggy frame can force the
+ * relay to spend decompressing and JSON-parsing before validation ever runs.
+ */
+const DEFAULT_MAX_PAYLOAD_BYTES = 1024 * 1024; // 1 MiB
 
 export async function createRelayServer({
   store,
@@ -66,7 +107,13 @@ export async function createRelayServer({
   vapidPublicKey,
   trustProxyHops,
   corsOrigins,
+  heartbeatIntervalMs,
+  heartbeatMaxMissedPongs,
+  maxPayloadBytes,
 }: RelayServerOptions): Promise<Server> {
+  const resolvedHeartbeatIntervalMs = heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  const resolvedHeartbeatMaxMissedPongs = heartbeatMaxMissedPongs ?? DEFAULT_HEARTBEAT_MAX_MISSED_PONGS;
+  const resolvedMaxPayloadBytes = maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
   const pairing = new PairingService(store);
   const hub = new ConnectionHub(store, pubsub, undefined, undefined, pushSender);
   await hub.start();
@@ -419,15 +466,50 @@ export async function createRelayServer({
   });
 
   const httpServer = createServer(app);
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const wss = new WebSocketServer({ server: httpServer, path: '/ws', maxPayload: resolvedMaxPayloadBytes });
 
   // An 'error' event with no listener is an uncaught exception, which terminates the process.
+  // This also covers a frame exceeding maxPayload: `ws` surfaces that as an 'error' on the
+  // socket (and aborts/closes it itself), not a thrown exception, so the frame is rejected
+  // without crashing the connection or the process.
   wss.on('error', () => {});
+
+  // Native ws ping/pong liveness check (see DEFAULT_HEARTBEAT_* doc comments above for the
+  // interval/miss-count reasoning). Tracked per-socket via a WeakMap rather than a property
+  // stashed on the `ws` instance, so this stays out of `ws`'s own type surface. A connection
+  // that misses `resolvedHeartbeatMaxMissedPongs` consecutive pongs is terminated via
+  // `ws.terminate()`, which — like any other socket close — fires the 'close' listener
+  // registered below, running the exact same `hub.unregister` cleanup (including the
+  // daemon-disconnect grace period in hub.ts) as a normal client-initiated close. There is
+  // deliberately no separate/shortcut cleanup path for a heartbeat-triggered termination.
+  const missedPongsBySocket = new WeakMap<WebSocket, number>();
+  const heartbeatInterval = setInterval(() => {
+    for (const ws of wss.clients) {
+      const missed = missedPongsBySocket.get(ws) ?? 0;
+      if (missed >= resolvedHeartbeatMaxMissedPongs) {
+        ws.terminate();
+        continue;
+      }
+      missedPongsBySocket.set(ws, missed + 1);
+      ws.ping();
+    }
+  }, resolvedHeartbeatIntervalMs);
+  // `wss.close()` (unlike `httpServer.close()`) is never called anywhere in this codebase — the
+  // relay just closes its one httpServer on shutdown/test teardown. Tying cleanup to
+  // httpServer's 'close' (rather than wss's) guarantees this interval is always cleared,
+  // including in every existing test that only closes httpServer. `unref()` is a second,
+  // redundant safety net in case some caller closes neither.
+  httpServer.on('close', () => clearInterval(heartbeatInterval));
+  heartbeatInterval.unref();
 
   wss.on('connection', (ws, req) => {
     // Attached first, before any async work, so a malformed frame arriving immediately after
     // the handshake cannot crash the process. The 'close' handler still fires afterwards.
     ws.on('error', () => {});
+
+    missedPongsBySocket.set(ws, 0);
+    // Any pong — solicited by our own ping or not — is evidence the connection is alive.
+    ws.on('pong', () => missedPongsBySocket.set(ws, 0));
 
     void (async () => {
       try {
@@ -459,7 +541,7 @@ export async function createRelayServer({
               if (device.type === 'daemon') {
                 const parsed = DaemonToRelayMessage.parse(rawFrame);
                 if (parsed.kind === 'event') {
-                  await hub.routeFromDaemon(connection, parsed.sessionId, parsed.event);
+                  await hub.routeFromDaemon(connection, parsed.sessionId, parsed.event, parsed.deliverySeq);
                 }
                 // 'command_ack' and 'rpc_response' are validated but not yet routed anywhere —
                 // command acknowledgment and RPC are later tasks.

@@ -26,7 +26,8 @@ export interface Connection {
  */
 export type RelayHubMessage =
   | Extract<RelayToBrowserMessage, { kind: 'event' }>
-  | Extract<RelayToDaemonMessage, { kind: 'command' }>;
+  | Extract<RelayToDaemonMessage, { kind: 'command' }>
+  | Extract<RelayToDaemonMessage, { kind: 'event_ack' }>;
 
 interface PubSubEnvelope {
   userId: string;
@@ -83,6 +84,17 @@ export class ConnectionHub {
    * `register`) before they fire; fires in `stopDaemonSessions` otherwise. */
   private pendingDaemonStops = new Map<string, ReturnType<typeof setTimeout>>();
 
+  /**
+   * Per-daemon-connection high-water mark of `deliverySeq` values whose events have been
+   * durably stored (see `routeFromDaemon` / `ackDelivery`). Keyed by the `Connection` object
+   * itself, not `deviceId`: a fresh object is created on every reconnect (see server.ts), so
+   * this naturally starts empty for a new connection rather than needing to be reset by hand —
+   * which is exactly right, since a reconnected daemon's replay can legitimately start at any
+   * `deliverySeq`, not necessarily 1 (see the class-level doc below for why "start at 1" would
+   * be the wrong assumption anyway).
+   */
+  private daemonAckState = new Map<Connection, number>();
+
   constructor(
     private store: Store,
     private pubsub: PubSub,
@@ -111,6 +123,12 @@ export class ConnectionHub {
   }
 
   unregister(connection: Connection): void {
+    // Not gated on the connection still being present in `connections` below: it's harmless to
+    // delete a key that was never inserted (no ack was ever sent), and this keeps ack-state
+    // cleanup unconditional rather than one more thing a future refactor of the block below
+    // could accidentally skip.
+    this.daemonAckState.delete(connection);
+
     const set = this.connections.get(connection.deviceId);
     if (!set) return;
     set.delete(connection);
@@ -185,7 +203,12 @@ export class ConnectionHub {
     return [...this.connections.values()].flatMap((set) => [...set]);
   }
 
-  async routeFromDaemon(connection: Connection, sessionId: string, event: SessionEvent): Promise<void> {
+  /**
+   * `deliverySeq` is optional only so every pre-existing call site in tests (which predate
+   * event acking and don't care about it) keeps compiling unchanged; every real caller
+   * (server.ts) always passes it, since every DaemonToRelayMessage `event` frame carries one.
+   */
+  async routeFromDaemon(connection: Connection, sessionId: string, event: SessionEvent, deliverySeq?: number): Promise<void> {
     if (event.sessionId !== sessionId) {
       throw new Error('Envelope sessionId does not match event payload sessionId');
     }
@@ -224,6 +247,50 @@ export class ConnectionHub {
     } satisfies PubSubEnvelope);
 
     await this.notifyPush(connection.userId, sessionId, event.type, stored.seq);
+
+    // Only reached once appendSessionEvent above has actually succeeded — if it throws, this
+    // line never runs and no ack is sent. That's what makes the ack a durability signal ("this
+    // is stored, stop buffering it") rather than a mere receipt. See ackDelivery's doc for why
+    // the acked value doesn't need to be an unbroken 1..N run.
+    if (deliverySeq !== undefined) {
+      this.ackDelivery(connection, deliverySeq);
+    }
+  }
+
+  /**
+   * Sends `event_ack` for the highest `deliverySeq` durably stored so far on this connection —
+   * deliberately NOT "the highest *contiguous* deliverySeq starting from 1," even though that's
+   * the more literal reading of "ack the highest contiguous value" this feature is often
+   * described with. That literal reading breaks in practice:
+   *
+   * The daemon's OutboundBuffer (see daemon's outbound-buffer.ts) evicts old entries under
+   * memory pressure. An evicted `deliverySeq` is gone forever — the daemon has no copy left to
+   * ever send — so if the relay insisted on an unbroken run before advancing its ack, the very
+   * first overflow would permanently wedge the ack at the last value before the gap, and the
+   * daemon would re-send (and the relay would re-store, since acknowledge() in the daemon's
+   * buffer only drops entries <= the acked value) every event after that gap forever.
+   *
+   * The fix relies on two facts:
+   *   1. A WebSocket delivers messages in order and without loss while the connection stays
+   *      open — TCP already guarantees that, and neither endpoint reorders or drops frames on
+   *      top of it. So any gap this method ever observes between successive `deliverySeq`
+   *      values on one connection is not a transport loss; it is the daemon itself having
+   *      already dropped those entries (buffer eviction) before ever sending them.
+   *   2. The daemon already knows about that gap independently (`OutboundBuffer.push` marks the
+   *      session for an `events_dropped` event – see outbound-buffer.ts) — the ack's job is
+   *      only to stop the daemon re-sending what it *did* send and the relay *did* store, not
+   *      to somehow account for what the daemon already gave up on.
+   *
+   * So: track a simple running maximum of "deliverySeq values whose store write has succeeded,"
+   * per connection (see `daemonAckState`), and advance across gaps freely. `Math.max` also
+   * makes this robust to a redundant/duplicate resend landing after a higher value already
+   * acked (the ack the daemon has already dropped everything <= is not walked backwards).
+   */
+  private ackDelivery(connection: Connection, deliverySeq: number): void {
+    const previous = this.daemonAckState.get(connection) ?? 0;
+    const next = Math.max(previous, deliverySeq);
+    this.daemonAckState.set(connection, next);
+    connection.send({ kind: 'event_ack', deliverySeq: next });
   }
 
   async routeFromBrowser(connection: Connection, sessionId: string, command: Command): Promise<void> {
