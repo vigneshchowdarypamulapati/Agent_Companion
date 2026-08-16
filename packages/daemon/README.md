@@ -3,8 +3,9 @@
 Owns and drives Claude Code sessions via the Claude Agent SDK. Exposes two
 independent control channels into the same `SessionManager`:
 
-- A **local-only** HTTP surface (bound to `127.0.0.1`) for exercising the
-  session lifecycle without the relay or web app.
+- A **local-only** HTTP surface (bound to `127.0.0.1`, opt-in, authenticated
+  — see below) for exercising the session lifecycle without the relay or web
+  app.
 - An **outbound relay client**, when `COMPANION_RELAY_URL` is set: a
   persistent WebSocket to the relay that forwards every `SessionEvent` and
   applies every `Command` the relay routes to this daemon.
@@ -16,16 +17,51 @@ independent control channels into the same `SessionManager`:
 
 ## Configuration
 
+- `COMPANION_DAEMON_HTTP` — set to `1` or `true` to turn on the local HTTP
+  control surface. **Off by default**, including in production. See
+  "Local HTTP surface" below for why.
 - `COMPANION_DAEMON_PORT` — local HTTP surface port (default `4310`).
+- `COMPANION_LOCAL_HTTP_TOKEN_PATH` — where the daemon persists the bearer
+  token that authenticates local HTTP requests (default:
+  `~/.companion/daemon-local-http.json`).
 - `COMPANION_RELAY_URL` — relay WebSocket URL, e.g. `ws://localhost:8787`. If
-  unset, the daemon runs exactly as before: local HTTP only, no relay
-  connection attempted.
+  unset, the daemon runs exactly as before: no relay connection attempted.
+  This is independent of `COMPANION_DAEMON_HTTP` — the relay connection
+  works the same whether or not the local HTTP surface is enabled.
 - `COMPANION_DEVICE_NAME` — name this daemon registers as (default: the
   machine's hostname).
 - `COMPANION_DEVICE_TOKEN_PATH` — where the daemon persists its relay device
   token after first pairing (default: `~/.companion/daemon-device.json`).
 
-## Endpoints (local HTTP surface)
+## Local HTTP surface
+
+This surface owns Claude Code sessions with full tool access (file writes,
+shell commands). Historically it started unconditionally and had no
+authentication — any web page the user's browser visited could DNS-rebind a
+hostname it controls to `127.0.0.1` and `POST /sessions` to start a session
+on the victim's machine. It is now for local development and testing only,
+and three independent layers enforce that:
+
+1. **Opt-in.** It does not start unless `COMPANION_DAEMON_HTTP` is `1` or
+   `true`. Unset — the normal production configuration — means the port is
+   never bound at all; the relay connection remains the production control
+   channel and is unaffected.
+2. **Bearer token.** Every route requires `Authorization: Bearer <token>`.
+   The token is 32 random bytes (hex-encoded) generated on first run and
+   persisted to `COMPANION_LOCAL_HTTP_TOKEN_PATH` (mode `0600` on POSIX,
+   same approach as the relay device token). It is also printed to the
+   daemon's stdout at startup.
+3. **Host allowlist.** Any request whose `Host` header isn't
+   `127.0.0.1:<port>`, `[::1]:<port>`, or `localhost:<port>` gets `403`. This
+   is the layer that actually defeats DNS rebinding: a page rebound to
+   loopback still sends its real hostname in the `Host` header, which is
+   never one of the three above.
+
+A missing or wrong bearer token is `401`; a bad `Host` header is `403`. Both
+checks run before body parsing and before any route handler, so a rejected
+request never reaches `SessionManager`.
+
+### Endpoints
 
 - `POST /sessions` `{ projectPath, prompt }` — start the one active session
 - `POST /sessions/:id/prompt` `{ text }` — inject a follow-up prompt
@@ -35,10 +71,6 @@ independent control channels into the same `SessionManager`:
 - `POST /sessions/:id/resume` — mark the session running again after a pause
 - `POST /sessions/:id/stop` — end the session
 - `GET /sessions/:id/events` — poll the event log for that session
-
-This HTTP surface is for local development and testing only; it is not
-authenticated and only binds to loopback. The relay connection is the
-production control channel for the web app.
 
 ## Relay connection
 
