@@ -5,6 +5,7 @@ import { createDbClient, type Db } from './db/client.js';
 import { runMigrations } from './db/migrate.js';
 import { PostgresStore } from './postgres-store.js';
 import { runStoreContractTests } from './store-contract-tests.js';
+import { pointsAtSameDatabase } from './test-db-guard.js';
 
 // This suite runs a destructive TRUNCATE against its database before every
 // test case (see beforeEach below), so it must never be able to point at a
@@ -39,12 +40,21 @@ if (!TEST_DATABASE_URL) {
 // operator-error identical value only in beforeEach would let that
 // migration run against a real dev/prod database first. This check and the
 // one in beforeEach are intentionally redundant (see the comment there).
-if (process.env.DATABASE_URL && TEST_DATABASE_URL === process.env.DATABASE_URL) {
+//
+// I4: uses pointsAtSameDatabase rather than a raw `===`, because two
+// byte-different connection strings can still address the same physical
+// database — Neon (this project's Postgres host) hands out both a pooled
+// hostname (`...-pooler...`) and a direct hostname for the same database,
+// and query params/credentials can differ too. A byte comparison alone
+// would pass in exactly the case this guard exists to catch. See
+// test-db-guard.ts for the comparison itself and its test coverage.
+if (process.env.DATABASE_URL && pointsAtSameDatabase(TEST_DATABASE_URL, process.env.DATABASE_URL)) {
   throw new Error(
-    'COMPANION_TEST_DATABASE_URL is identical to DATABASE_URL. Refusing to run — this ' +
-      'suite migrates and then truncates its database before every test, and must never ' +
-      'do that against what may be a real dev/prod database. Point ' +
-      'COMPANION_TEST_DATABASE_URL at a separate, isolated Neon branch instead.'
+    'COMPANION_TEST_DATABASE_URL resolves to the same database as DATABASE_URL (same host — ' +
+      'ignoring a Neon pooler suffix — and same database name, regardless of query params or ' +
+      'credentials). Refusing to run — this suite migrates and then truncates its database ' +
+      'before every test, and must never do that against what may be a real dev/prod ' +
+      'database. Point COMPANION_TEST_DATABASE_URL at a separate, isolated Neon branch instead.'
   );
 }
 
@@ -62,16 +72,16 @@ afterAll(async () => {
 
 beforeEach(async () => {
   // Independent, redundant guard: even though the module-level check above
-  // already refuses to run with COMPANION_TEST_DATABASE_URL unset, this
-  // catches the operator who "helpfully" points both env vars at the same
-  // database — that would still send the TRUNCATE below at DATABASE_URL.
-  // Checked fresh immediately before every TRUNCATE, not just once at
-  // import time.
-  if (process.env.DATABASE_URL && TEST_DATABASE_URL === process.env.DATABASE_URL) {
+  // already refuses to run with COMPANION_TEST_DATABASE_URL unset or
+  // resolving to the same database as DATABASE_URL, this catches the
+  // operator who "helpfully" points both env vars at the same database —
+  // that would still send the TRUNCATE below at DATABASE_URL. Checked
+  // fresh immediately before every TRUNCATE, not just once at import time.
+  if (process.env.DATABASE_URL && pointsAtSameDatabase(TEST_DATABASE_URL, process.env.DATABASE_URL)) {
     throw new Error(
-      'COMPANION_TEST_DATABASE_URL is identical to DATABASE_URL. Refusing to run the ' +
-        'destructive TRUNCATE below against what may be a real dev/prod database. Point ' +
-        'COMPANION_TEST_DATABASE_URL at a separate, isolated Neon branch instead.'
+      'COMPANION_TEST_DATABASE_URL resolves to the same database as DATABASE_URL. Refusing ' +
+        'to run the destructive TRUNCATE below against what may be a real dev/prod database. ' +
+        'Point COMPANION_TEST_DATABASE_URL at a separate, isolated Neon branch instead.'
     );
   }
   await db.execute(

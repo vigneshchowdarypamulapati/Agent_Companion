@@ -25,10 +25,17 @@ extra flags needed for `npm start` or `npm test`.
 `postgres-store.test.ts` truncates every table before each test case, so it
 never reads `DATABASE_URL` for that connection — it reads a separate
 **`COMPANION_TEST_DATABASE_URL`** instead, and refuses to run (fails fast,
-without connecting to any database) if that variable is unset, or if it's
-byte-identical to `DATABASE_URL`. This is deliberate: a stale or
-misconfigured `DATABASE_URL` in some shell must never be able to wipe real
-data just because the test suite ran. Provision an isolated Neon branch for
+without connecting to any database) if that variable is unset, or if it
+resolves to the same database as `DATABASE_URL`. That comparison is
+semantic, not byte-for-byte (see `src/test-db-guard.ts`): it parses both
+connection strings and compares hostname (with a Neon pooled-endpoint
+`-pooler` suffix normalized away) and database name, ignoring credentials
+and query parameters — two byte-different connection strings can still
+address the same physical database (Neon's pooled and direct hostnames for
+one database being the common case), and a plain `===` would miss that.
+This is deliberate: a stale or misconfigured `DATABASE_URL` in some shell
+must never be able to wipe real data just because the test suite ran.
+Provision an isolated Neon branch for
 testing (Neon's branching is free, instant, and copy-on-write — see
 `docs/superpowers/specs/2026-08-11-persistent-storage-design.md`) and set
 `COMPANION_TEST_DATABASE_URL` in `packages/relay/.env` to that branch's
@@ -61,20 +68,31 @@ today and `GET /push/vapid-public-key` returns `404`.
 
 Set `COMPANION_RELAY_TRUST_PROXY` to the number of reverse proxies/load
 balancers in front of this relay in your deployment (commonly `1` for a
-single LB, like most PaaS setups). Outside production it's optional — unset
-(or `0`) means "trust nothing," the default when there's no proxy or the
-topology is unknown. **In production (`NODE_ENV=production`) it is
-required: the relay refuses to start if it's unset.** There is no safe
-default to fall back to — `0` behind a real proxy collapses every client
-into the proxy's single IP (roughly 80 unauthenticated requests then lock
-out *every* user's pairing/registration), while a non-zero value with no
-proxy in front lets any caller spoof `X-Forwarded-For` and bypass IP-keyed
-rate limiting entirely. Whenever set (in any environment), the relay also
-fails fast at startup if the value isn't a non-negative integer. If a
-request arrives carrying `X-Forwarded-For` while the effective hop count is
-`0`, the relay logs one warning (not per-request) — a sign the deployment
-is behind a proxy that hasn't been declared. See "Rate limits" below for
-why getting this right matters.
+single LB, like most PaaS setups). In local development and the test suite
+(`NODE_ENV=development` or `NODE_ENV=test`) it's optional — unset (or `0`)
+means "trust nothing," the default when there's no proxy or the topology is
+unknown. **Everywhere else — including an unset `NODE_ENV` — it is
+required: the relay refuses to start if it's unset, blank, or
+whitespace-only.** `NODE_ENV` is deliberately *not* checked against
+`'production'` specifically: only `'development'` and `'test'` are treated
+as safe to default, so a deployment that forgets to set `NODE_ENV` at all
+(common on a bare VPS/systemd setup) still gets the fail-fast check instead
+of silently defaulting to `0`. There is no safe default to fall back to —
+`0` behind a real proxy collapses every client into the proxy's single IP
+(roughly 80 unauthenticated requests then lock out *every* user's
+pairing/registration), while a non-zero value with no proxy in front lets
+any caller spoof `X-Forwarded-For` and bypass IP-keyed rate limiting
+entirely. Whenever set to a non-blank value (in any environment), the relay
+also fails fast at startup if it isn't a non-negative integer. If a request
+arrives carrying `X-Forwarded-For` while the effective hop count is `0`,
+the relay logs one warning (not per-request) — a sign the deployment is
+behind a proxy that hasn't been declared. See "Rate limits" below for why
+getting this right matters.
+
+`.env.example` deliberately ships this variable commented out rather than
+set to a working value — a working-but-wrong default (e.g. `0`) would be
+silently copied into every `.env` created from it and defeat the fail-fast
+check entirely, since a *set* variable (even a wrong one) satisfies it.
 
 Set `COMPANION_RELAY_CORS_ORIGIN` to a comma-separated list of origins the
 web app is served from, so browsers are allowed to call this relay
@@ -132,10 +150,15 @@ origin(s) or every browser request will be blocked by CORS.
   replayable, authenticated blind-SSRF primitive with built-in request
   amplification. IP-literal hosts (IPv4 or bracketed IPv6) are always
   rejected outright. To allow another provider without a code change, set
-  `COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST` to a comma-separated list of
-  bare hostnames (no scheme/path/port/IP literals) — the relay fails fast
-  at startup if it's set but malformed. See `packages/protocol/src/push.ts`
-  for the exact matching rule (exact host or a proper `.`-prefixed
+  `COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST` (in `packages/relay/.env` or the
+  process environment) to a comma-separated list of bare hostnames (no
+  scheme/path/port/IP literals) — if it's set but malformed, the relay
+  fails fast the first time an endpoint is validated (the first
+  `POST /devices/push-subscription`), not necessarily at process startup:
+  the check is deliberately lazy so a value set only in `.env` is honored
+  (`@companion/protocol` is imported before `main.ts` loads `.env`). See
+  `packages/protocol/src/push.ts` for the exact matching rule (exact host
+  or a proper `.`-prefixed
   subdomain — never a bare substring match).
 - `DELETE /devices/push-subscription` — clears the calling device's
   subscription. `200 { ok: true }` on success (idempotent — succeeds even
@@ -204,9 +227,10 @@ The counters live in this process, like `PubSub` — see "Current scope" below.
   `trust proxy` setting is configured with the real hop count — set
   `COMPANION_RELAY_TRUST_PROXY` accordingly before deploying behind one, or
   this limit (and the register-browser pre-auth guard above) will collapse
-  onto a single shared bucket for every client. Outside production it
-  defaults to trusting nothing; in production the relay requires this to be
-  set explicitly and refuses to start otherwise (see above).
+  onto a single shared bucket for every client. In local dev/test it
+  defaults to trusting nothing; everywhere else (including an unset
+  `NODE_ENV`) the relay requires this to be set explicitly and refuses to
+  start otherwise (see above).
 
 ## WebSocket
 

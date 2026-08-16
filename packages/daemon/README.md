@@ -15,6 +15,13 @@ independent control channels into the same `SessionManager`:
     npm run build
     npm start
 
+Requires at least one of the two control channels below
+(`COMPANION_RELAY_URL` or `COMPANION_DAEMON_HTTP=1`) to be configured. With
+neither set, the daemon refuses to start — it exits non-zero with an
+actionable error rather than starting and immediately exiting 0 (which a
+process supervisor would read as an intentional clean shutdown) or idling
+forever with no way to ever be controlled.
+
 ## Configuration
 
 - `COMPANION_DAEMON_HTTP` — set to `1` or `true` to turn on the local HTTP

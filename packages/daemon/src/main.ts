@@ -93,7 +93,36 @@ export function isHttpSurfaceEnabled(value: string | undefined): boolean {
 
 const HTTP_ENABLED = isHttpSurfaceEnabled(process.env.COMPANION_DAEMON_HTTP);
 
-async function main(): Promise<void> {
+/**
+ * A daemon with neither control channel configured — no `COMPANION_RELAY_URL` and the local
+ * HTTP surface off (its default) — is a misconfiguration, not a valid idle state: nothing can
+ * ever start, stop, or observe a session on it. Before `connectWithRetry` existed, this shape
+ * exited 0 as soon as the (now-removed) single relay-connect attempt failed; after it existed,
+ * this second, distinct path survived — the *default* configuration (both unset, e.g. a fresh
+ * `npm run build && npm start` with no env vars at all, per the daemon README) leaves nothing
+ * holding the Node event loop open, so the process still prints one informational line and
+ * exits 0. A process supervisor reads exit 0 as an intentional clean shutdown and neither
+ * restarts nor alerts on it. Returns an Error describing both ways to fix it (rather than
+ * throwing directly) so main() can decide how to surface it, and so this check is unit
+ * testable without executing any of main()'s I/O.
+ */
+export function noControlChannelConfiguredError(
+  httpEnabled: boolean,
+  relayUrl: string | undefined
+): Error | undefined {
+  if (httpEnabled || relayUrl) return undefined;
+  return new Error(
+    'No control channel is configured: neither COMPANION_RELAY_URL nor COMPANION_DAEMON_HTTP ' +
+      'is set. Set COMPANION_RELAY_URL to connect this daemon to a relay, or set ' +
+      'COMPANION_DAEMON_HTTP=1 to enable the local HTTP control surface for local development. ' +
+      'Refusing to start with neither — there would be no way to ever control this daemon.'
+  );
+}
+
+export async function main(): Promise<void> {
+  const noControlChannelError = noControlChannelConfiguredError(HTTP_ENABLED, RELAY_URL);
+  if (noControlChannelError) throw noControlChannelError;
+
   let relayClient: RelayClient | undefined;
 
   const eventLog: SessionEvent[] = [];

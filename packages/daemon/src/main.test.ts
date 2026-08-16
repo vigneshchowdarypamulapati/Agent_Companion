@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { isHttpSurfaceEnabled, connectWithRetry } from './main.js';
+import { isHttpSurfaceEnabled, connectWithRetry, noControlChannelConfiguredError } from './main.js';
 
 describe('isHttpSurfaceEnabled', () => {
   it('is off when the env var is unset', () => {
@@ -126,5 +126,64 @@ describe('connectWithRetry', () => {
     });
 
     expect(delays).toEqual([100, 200, 300, 300, 300]);
+  });
+});
+
+/**
+ * Regression coverage for I3: a second, distinct instance of the exit-0 shape above, surviving
+ * one branch over. connectWithRetry fixed "relay unreachable at startup" from exiting 0 — but a
+ * daemon started with the *default* configuration (no COMPANION_RELAY_URL, HTTP surface off)
+ * never calls connectWithRetry at all, so nothing holds the event loop open and the process
+ * still exits 0, indistinguishable from a clean shutdown to a supervisor.
+ */
+describe('noControlChannelConfiguredError', () => {
+  it('returns an error when neither channel is configured', () => {
+    const error = noControlChannelConfiguredError(false, undefined);
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toMatch(/COMPANION_RELAY_URL/);
+    expect(error?.message).toMatch(/COMPANION_DAEMON_HTTP/);
+  });
+
+  it('returns undefined when the local HTTP surface is enabled', () => {
+    expect(noControlChannelConfiguredError(true, undefined)).toBeUndefined();
+  });
+
+  it('returns undefined when a relay URL is configured', () => {
+    expect(noControlChannelConfiguredError(false, 'ws://localhost:8787')).toBeUndefined();
+  });
+
+  it('returns undefined when both are configured', () => {
+    expect(noControlChannelConfiguredError(true, 'ws://localhost:8787')).toBeUndefined();
+  });
+
+  it('treats an empty-string relay URL as not configured', () => {
+    // process.env values are always strings; an accidentally-empty COMPANION_RELAY_URL=
+    // must not count as "configured" (main.ts's `if (RELAY_URL)` already treats '' as falsy,
+    // this just documents that this check agrees).
+    expect(noControlChannelConfiguredError(false, '')).toBeInstanceOf(Error);
+  });
+});
+
+/**
+ * End-to-end version of the same regression, driven through the real entrypoint function
+ * rather than the extracted pure check above: with both env vars unset (main.ts's module-scope
+ * defaults — the state of a fresh checkout's `npm start` per the daemon README), main() must
+ * reject before doing anything else, rather than resolving and letting the process fall through
+ * to exit 0. Uses vi.resetModules() + a fresh dynamic import because HTTP_ENABLED/RELAY_URL are
+ * computed from process.env once, at module-evaluation time (same pattern as
+ * packages/web/src/config.test.ts).
+ */
+describe('main() with no control channel configured (I3 end-to-end)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('rejects instead of resolving, so the process exits non-zero instead of 0', async () => {
+    vi.stubEnv('COMPANION_RELAY_URL', '');
+    vi.stubEnv('COMPANION_DAEMON_HTTP', '');
+    vi.resetModules();
+    const mod = await import('./main.js');
+    await expect(mod.main()).rejects.toThrow(/No control channel is configured/);
   });
 });

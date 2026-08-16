@@ -1,3 +1,4 @@
+import { PushSubscriptionPayload } from '@companion/protocol';
 import type { Command, SessionEvent, SessionStatus } from '@companion/protocol';
 import type { Store } from './store.js';
 import type { PubSub } from './pubsub.js';
@@ -236,6 +237,17 @@ export class ConnectionHub {
    * failure mode here — no matching title, no session, an individual device's send failing, a
    * store failure — is swallowed: push delivery is best-effort and must never affect event
    * routing or crash the process.
+   *
+   * `device.pushSubscription` is re-validated with `PushSubscriptionPayload.safeParse`
+   * immediately before every send, not trusted as-is from the store. `POST
+   * /devices/push-subscription` only validates on the way in, and only for subscriptions
+   * written *after* that validation existed — any row written earlier (or by some future
+   * write path that forgets to validate) would otherwise be POSTed to unchanged, which is
+   * exactly the SSRF primitive the ingress validation exists to close, now carrying up to 140
+   * characters of assistant text as the POST body. A subscription that fails re-validation is
+   * treated the same as the existing `'gone'` case — cleared via `setPushSubscription`, never
+   * sent to — which is self-healing (the browser will re-subscribe and overwrite it) and needs
+   * no separate backfill migration or operator step.
    */
   private async notifyPush(userId: string, sessionId: string, eventType: SessionEvent['type'], currentSeq: number): Promise<void> {
     if (!this.pushSender) return;
@@ -251,7 +263,14 @@ export class ConnectionHub {
       await Promise.all(
         targets.map(async (device) => {
           try {
-            const result = await this.pushSender!.send(device.pushSubscription!, payload);
+            const revalidated = PushSubscriptionPayload.safeParse(device.pushSubscription);
+            if (!revalidated.success) {
+              // Stored before endpoint validation existed (or written by some other path that
+              // skipped it): never send to it, and clear it so the browser re-subscribes.
+              await this.store.setPushSubscription(device.id, undefined);
+              return;
+            }
+            const result = await this.pushSender!.send(revalidated.data, payload);
             if (result === 'gone') {
               await this.store.setPushSubscription(device.id, undefined);
             }

@@ -126,19 +126,44 @@ describe('COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST', () => {
     expect(Schema.safeParse(payload('https://not-allowed.test/x')).success).toBe(false);
   });
 
-  it('fails fast at import time when the allowlist env var is malformed', async () => {
+  // M1 / Minor 5: the allowlist must NOT be read at module import time — the relay's main.ts
+  // imports @companion/protocol (transitively) before it calls process.loadEnvFile('.env'), so
+  // an import-time read would silently ignore a value set only in .env. It must instead be read
+  // lazily, the first time an endpoint is actually validated.
+
+  it('does not throw on import when the allowlist env var is malformed', async () => {
     process.env.COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST = 'not a hostname/with a path';
     vi.resetModules();
-    await expect(import('./push.js')).rejects.toThrow(
+    await expect(import('./push.js')).resolves.toBeDefined();
+  });
+
+  it('fails fast on first validation when the allowlist env var is malformed', async () => {
+    process.env.COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST = 'not a hostname/with a path';
+    vi.resetModules();
+    const { PushSubscriptionPayload: Schema } = await import('./push.js');
+    expect(() => Schema.safeParse(payload('https://fcm.googleapis.com/fcm/send/abc123'))).toThrow(
       /COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST must be a comma-separated list/
     );
   });
 
-  it('fails fast at import time when the allowlist env var contains an IP literal', async () => {
+  it('fails fast on first validation when the allowlist env var contains an IP literal', async () => {
     process.env.COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST = '203.0.113.10';
     vi.resetModules();
-    await expect(import('./push.js')).rejects.toThrow(
+    const { PushSubscriptionPayload: Schema } = await import('./push.js');
+    expect(() => Schema.safeParse(payload('https://fcm.googleapis.com/fcm/send/abc123'))).toThrow(
       /COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST must be a comma-separated list/
     );
+  });
+
+  it('reads a value set after import (proving the read is lazy, not cached at module load)', async () => {
+    delete process.env.COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST;
+    vi.resetModules();
+    const { PushSubscriptionPayload: Schema } = await import('./push.js');
+    // Not set at import time — an endpoint on the not-yet-configured extra host is rejected.
+    expect(Schema.safeParse(payload('https://push.example-provider.test/x')).success).toBe(false);
+    // Set afterwards (simulating main.ts's process.loadEnvFile('.env') running after this
+    // package's imports are hoisted) — now honored on the next validation.
+    process.env.COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST = 'push.example-provider.test';
+    expect(Schema.safeParse(payload('https://push.example-provider.test/x')).success).toBe(true);
   });
 });

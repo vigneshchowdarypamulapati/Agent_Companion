@@ -27,11 +27,23 @@ function isIpLiteral(host: string): boolean {
 /**
  * Extra allowed push-endpoint hosts on top of BASE_ALLOWED_PUSH_HOSTS, so a
  * push provider that ships later doesn't require a code change here.
- * Comma-separated, validated eagerly at import time — same
- * fail-fast-if-invalid shape as the relay's other COMPANION_RELAY_* env
- * vars (see packages/relay/src/main.ts) — so a typo is caught at startup,
- * not silently ignored the first time a subscription needs it. Unset is
- * fine and adds nothing.
+ * Comma-separated. Unset is fine and adds nothing.
+ *
+ * Deliberately NOT read at module load. `@companion/protocol` is imported
+ * by the relay's `main.ts` (via `server.js`) before `main.ts` calls
+ * `process.loadEnvFile('.env')` — ESM hoists all of a module's imports
+ * ahead of its own top-level code, so anything this package read from
+ * `process.env` at import time would see the environment as it was
+ * *before* `.env` was loaded, and a value set only in `.env` (the
+ * mechanism the relay's README documents for every other
+ * `COMPANION_RELAY_*` variable) would be silently ignored. Reading it here,
+ * inside the function `isAllowedPushHost` calls on every validation
+ * instead, means it's evaluated the first time an endpoint actually needs
+ * checking — by which point `main.ts` has already loaded `.env` — so a
+ * value set there is honored, and a typo is still caught fast (on the
+ * first `POST /devices/push-subscription`, or the first
+ * `PushSubscriptionPayload.safeParse` call in a test), just not
+ * necessarily at process startup.
  */
 function parseExtraAllowedHosts(raw: string | undefined): string[] {
   if (raw === undefined) return [];
@@ -48,12 +60,9 @@ function parseExtraAllowedHosts(raw: string | undefined): string[] {
   return hosts;
 }
 
-const EXTRA_ALLOWED_PUSH_HOSTS = parseExtraAllowedHosts(
-  process.env.COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST
-);
-
 function isAllowedPushHost(hostname: string): boolean {
-  const allowed = BASE_ALLOWED_PUSH_HOSTS.length + EXTRA_ALLOWED_PUSH_HOSTS.length;
+  const extraAllowedHosts = parseExtraAllowedHosts(process.env.COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST);
+  const allowed = BASE_ALLOWED_PUSH_HOSTS.length + extraAllowedHosts.length;
   if (allowed === 0) return false;
   for (const host of BASE_ALLOWED_PUSH_HOSTS) {
     // Exact match or a proper "." boundary subdomain match — never a bare
@@ -61,7 +70,7 @@ function isAllowedPushHost(hostname: string): boolean {
     // "evil-fcm.googleapis.com.attacker.test" would slip through.
     if (hostname === host || hostname.endsWith(`.${host}`)) return true;
   }
-  for (const host of EXTRA_ALLOWED_PUSH_HOSTS) {
+  for (const host of extraAllowedHosts) {
     if (hostname === host || hostname.endsWith(`.${host}`)) return true;
   }
   return false;

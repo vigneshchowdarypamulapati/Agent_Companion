@@ -958,6 +958,70 @@ describe('ConnectionHub', () => {
     expect(devices.find((d) => d.id === browserDevice.id)?.pushSubscription).toBeUndefined();
   });
 
+  // --- I2: re-validating stored subscriptions before every send ---
+
+  it('never sends to a stored subscription that fails re-validation, and clears it', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const userId = 'user-1';
+    const browserDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h1' });
+    // Simulates a row written before endpoint validation existed (or by some other write path
+    // that skipped it) — an internal/SSRF-shaped endpoint that would never pass
+    // PushSubscriptionPayload today. The store itself enforces no schema, so this can only be
+    // caught by re-validating immediately before sending.
+    const staleInvalidSubscription = {
+      endpoint: 'http://169.254.169.254/latest/meta-data/',
+      keys: { p256dh: 'p', auth: 'a' },
+    } as unknown as PushSubscriptionPayload;
+    await store.setPushSubscription(browserDevice.id, staleInvalidSubscription);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 2 });
+
+    // The critical assertion: the SSRF-shaped endpoint was never POSTed to.
+    expect(pushSender.sent).toHaveLength(0);
+
+    // Self-healing: the invalid subscription was cleared, same as the 'gone' handling.
+    const devices = await store.getDevicesForUser(userId);
+    expect(devices.find((d) => d.id === browserDevice.id)?.pushSubscription).toBeUndefined();
+  });
+
+  it('still sends to other valid devices when one device has a stale invalid subscription', async () => {
+    const store = new InMemoryStore();
+    const pushSender = fakePushSender();
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, undefined, pushSender);
+    await hub.start();
+    const userId = 'user-1';
+    const staleDevice = await store.createDevice({ userId, type: 'browser', name: 'old-phone', tokenHash: 'h1' });
+    const validDevice = await store.createDevice({ userId, type: 'browser', name: 'phone', tokenHash: 'h2' });
+    const staleInvalidSubscription = {
+      endpoint: 'http://169.254.169.254/latest/meta-data/',
+      keys: { p256dh: 'p', auth: 'a' },
+    } as unknown as PushSubscriptionPayload;
+    await store.setPushSubscription(staleDevice.id, staleInvalidSubscription);
+    await store.setPushSubscription(validDevice.id, subscriptionA);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId });
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromDaemon(daemon, 'sess-1', { type: 'stopped', sessionId: 'sess-1', at: 2 });
+
+    expect(pushSender.sent).toHaveLength(1);
+    expect(pushSender.sent[0].subscription).toEqual(subscriptionA);
+  });
+
   it("one device's push failure does not prevent another device's push from being sent", async () => {
     const store = new InMemoryStore();
     const pushSender = fakePushSender('throw');
