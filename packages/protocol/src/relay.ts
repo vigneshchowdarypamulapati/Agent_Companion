@@ -23,7 +23,11 @@ export const RequestPairingCodeRequest = z.object({
 export type RequestPairingCodeRequest = z.infer<typeof RequestPairingCodeRequest>;
 
 export const ClaimPairingRequest = z.object({
-  code: z.string(),
+  // The canonical code is 8 characters (see PAIRING_CODE_LENGTH in
+  // @companion/relay's store.ts); 32 comfortably covers the displayed
+  // XXXX-XXXX grouping plus incidental whitespace a human might paste in,
+  // while still bounding the input the relay normalizes/matches against.
+  code: z.string().max(32),
 });
 export type ClaimPairingRequest = z.infer<typeof ClaimPairingRequest>;
 

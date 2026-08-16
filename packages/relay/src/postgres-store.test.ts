@@ -74,7 +74,9 @@ beforeEach(async () => {
         'COMPANION_TEST_DATABASE_URL at a separate, isolated Neon branch instead.'
     );
   }
-  await db.execute(sql`TRUNCATE TABLE users, devices, pairing_codes, sessions, session_events RESTART IDENTITY CASCADE`);
+  await db.execute(
+    sql`TRUNCATE TABLE users, devices, pairing_codes, claim_failures, sessions, session_events RESTART IDENTITY CASCADE`
+  );
 });
 
 runStoreContractTests('PostgresStore', (now) => new PostgresStore(db, now));

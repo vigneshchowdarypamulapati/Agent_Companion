@@ -14,33 +14,71 @@ export const PAIRING_CODE_LENGTH = 8;
 
 /**
  * A pairing code is invalidated once this many claim attempts against it
- * have failed, regardless of whether its TTL has otherwise expired. This is
- * the persistent half of the pairing-code defense: unlike an in-memory
- * per-account rate limiter, it lives on the code's own row, so it survives
- * process restarts/redeploys and can't be dodged by attempting from a fresh
- * account.
+ * *by an account other than its current owner* have failed, regardless of
+ * whether its TTL has otherwise expired. This bounds repeated re-claim
+ * attempts against a code an attacker has already obtained by some other
+ * means (e.g. won a claim race, or read it over someone's shoulder) — it
+ * does NOT bound blind guessing of an unknown code: a wrong guess almost
+ * always matches no row at all (`code` is the primary key), so there is no
+ * row here to attribute the failure to. `CLAIM_FAILURE_LIMIT` /
+ * `CLAIM_FAILURE_WINDOW_MS` below, keyed by the *guessing account* rather
+ * than by code, are what actually bound blind guessing.
  */
 export const MAX_PAIRING_CODE_ATTEMPTS = 5;
 
 /**
- * Draws a single index in `[0, alphabetSize)` from `randomBytes` using
+ * Persistent, per-account cap on failed `/pairing/claim` attempts — this is
+ * what actually bounds an online guessing attack long-term, unlike the
+ * in-memory `RateLimiter` in server.ts (`claimLimiter`), which resets on
+ * every process restart/redeploy and is trivially dodged by an attacker
+ * simply waiting one out or, if they can trigger enough claim volume before
+ * that, is the only thing standing between them and the 40-bit code space.
+ * Only `not_found`/`expired` results count (see `recordFailedClaim` in each
+ * Store implementation) — those are the outcomes a blind guess actually
+ * produces. `already_claimed` and `daemon_exists` are excluded: they carry
+ * no guessing signal (a same-account double-tap on a code it already owns
+ * is expected traffic, not an attack — see the `userId === pairing.userId`
+ * carve-out in `claimPairingCode` for the identical reasoning applied to
+ * `MAX_PAIRING_CODE_ATTEMPTS`).
+ *
+ * 10 failures / 15 minutes: generous enough that a human mistyping an
+ * 8-character code a few times in a row never gets locked out (5-minute
+ * code TTL means they'd need to fail, get a fresh code, and fail again
+ * repeatedly to even approach it), while still keeping automated guessing
+ * to a low, auditable rate that's completely irrelevant against a 2^40
+ * keyspace regardless — the entropy is the actual defense against success:
+ * this just guarantees a hard, durable ceiling exists at all, closing the
+ * "reset on every deploy" gap in the in-memory limiter.
+ */
+export const CLAIM_FAILURE_LIMIT = 10;
+export const CLAIM_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * Draws a single index in `[0, alphabetSize)` from a byte source using
  * rejection sampling, so every index is exactly uniform. A byte whose value
  * falls in the partial final bucket — anything >= the largest multiple of
  * `alphabetSize` that fits in a byte — is discarded and redrawn rather than
  * reduced with `%`, which would bias low indices whenever 256 isn't an exact
  * multiple of `alphabetSize`. For `PAIRING_CODE_ALPHABET` specifically,
  * 256 % 32 is 0, so no byte is ever actually rejected there — see
- * store.test.ts, which exercises this same function with alphabet sizes
- * that *don't* divide 256 evenly to prove the rejection check, not the
- * coincidence, is what keeps it unbiased.
+ * store.test.ts, which exercises this same function at alphabet sizes that
+ * *don't* divide 256 evenly, with a deterministic (not random) byte source,
+ * to prove the rejection check itself — not the 32-divides-256 coincidence
+ * — is what keeps it unbiased.
+ *
+ * `randomByte` defaults to a real CSPRNG byte and only exists as a
+ * parameter so tests can inject an exact, deterministic byte sequence
+ * (including values that land in the rejected range) instead of relying on
+ * statistical sampling of the real RNG, which is inherently probabilistic
+ * and therefore an unavoidably flaky way to test this.
  */
-export function randomAlphabetIndex(alphabetSize: number): number {
+export function randomAlphabetIndex(alphabetSize: number, randomByte: () => number = () => randomBytes(1)[0]): number {
   if (!Number.isInteger(alphabetSize) || alphabetSize < 1 || alphabetSize > 256) {
     throw new RangeError('alphabetSize must be an integer between 1 and 256');
   }
   const maxAcceptable = Math.floor(256 / alphabetSize) * alphabetSize;
   while (true) {
-    const byte = randomBytes(1)[0];
+    const byte = randomByte();
     if (byte < maxAcceptable) return byte % alphabetSize;
   }
 }
@@ -141,6 +179,25 @@ export interface Store {
    * point that makes a pairing code redeemable exactly once.
    */
   redeemPairingCode(deviceCode: string): Promise<PairingCode | undefined>;
+  /**
+   * Read-only: true if `userId` has hit `CLAIM_FAILURE_LIMIT` failed claims
+   * within the current `CLAIM_FAILURE_WINDOW_MS` window. Does not record
+   * anything itself — callers check this *before* attempting a claim, so a
+   * rate-limited account's response never depends on whether the code it
+   * submitted exists (preserving the not_found/expired/already_claimed
+   * non-enumeration property).
+   */
+  isClaimRateLimited(userId: string): Promise<boolean>;
+  /**
+   * Records one failed claim attempt for `userId`, using a fixed window: if
+   * no window is open yet, or the open one is older than
+   * `CLAIM_FAILURE_WINDOW_MS`, this starts a fresh window at count 1;
+   * otherwise it increments the count in the current window. A fixed
+   * (rather than sliding) window can allow up to ~2x the nominal rate right
+   * at a window boundary — an accepted, standard trade-off for the
+   * simplicity of not tracking individual timestamps.
+   */
+  recordFailedClaim(userId: string): Promise<void>;
   upsertSession(session: SessionRecord): Promise<void>;
   updateSessionStatus(sessionId: string, status: SessionStatus): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | undefined>;

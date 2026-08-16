@@ -71,19 +71,28 @@ export async function createRelayServer({
   await hub.start();
 
   // A pairing code is 8 Crockford-base32 characters (40 bits) and lives 5
-  // minutes. That space alone is not brute-forceable inside one code's
-  // lifetime, but this rate limiter plus the persistent per-code
-  // failed-attempt lockout (Store.claimPairingCode /
-  // MAX_PAIRING_CODE_ATTEMPTS) are still both required: this limiter is
-  // in-memory and resets on every restart/redeploy, while the per-code
-  // lockout is what survives that and actually bounds a sustained online
-  // guessing attack by anyone who can sign up (signup is public) — a hit
-  // hijacks a stranger's daemon onto the attacker's account. Final design,
-  // per route:
-  // - /pairing/claim is keyed by the calling device's *account* (device.userId),
-  //   not IP — it runs post-authentication, so the account is known and this is
-  //   strictly tighter than keying by device (an account can't buy more claim
-  //   budget by registering extra browser devices).
+  // minutes; a hit hijacks a stranger's daemon onto the attacker's account
+  // (signup is public, so "anyone" includes the attacker). /pairing/claim
+  // is defended by three independent layers, each closing a gap the others
+  // leave open:
+  //   1. claimLimiter below — in-memory, 10/5min, keyed by the calling
+  //      device's *account* (device.userId), not IP: it runs
+  //      post-authentication, so the account is already known, and this is
+  //      strictly tighter than keying by device (an account can't buy more
+  //      claim budget by registering extra browser devices). Fast to check,
+  //      but resets on every process restart/redeploy.
+  //   2. store.isClaimRateLimited / store.recordFailedClaim — persistent,
+  //      CLAIM_FAILURE_LIMIT/CLAIM_FAILURE_WINDOW_MS (see store.ts), also
+  //      keyed by account. This is what actually bounds a *sustained* online
+  //      guessing attack: it survives restarts/redeploys, unlike (1). Only
+  //      not_found/expired results count as failures (see store.ts for why)
+  //      — checked *before* the code is even looked up, so a rate-limited
+  //      account's 429 never depends on whether the submitted code exists.
+  //   3. Store.claimPairingCode / MAX_PAIRING_CODE_ATTEMPTS — per-*code*,
+  //      not per-account: bounds repeated re-claim attempts against a
+  //      specific code someone has already obtained by some other means. It
+  //      cannot bound blind guessing (a wrong guess matches no row at all),
+  //      which is what (1) and (2) are for.
   // - /devices/register-browser's real control is a limiter keyed by the
   //   *verified Clerk identity*, checked immediately after
   //   `identityVerifier.verifyToken()` succeeds and before any registration
@@ -134,8 +143,23 @@ export async function createRelayServer({
         res.status(429).json({ error: 'Too many pairing attempts, try again later' });
         return;
       }
+      // Checked before the code is parsed/looked up at all, so this 429
+      // never depends on — and can't leak anything about — the code the
+      // caller submitted.
+      if (await store.isClaimRateLimited(device.userId)) {
+        res.status(429).json({ error: 'Too many pairing attempts, try again later' });
+        return;
+      }
       const { code } = ClaimPairingRequest.parse(req.body);
       const result = await pairing.claimPairingCode(code, device.userId);
+      // Only these two outcomes are what a blind guess actually produces
+      // (see CLAIM_FAILURE_LIMIT in store.ts) — already_claimed/daemon_exists
+      // carry no guessing signal and are excluded so ordinary friction
+      // (a double-tapped claim, retrying after already having a daemon)
+      // never counts against this account's durable failure budget.
+      if (result === 'not_found' || result === 'expired') {
+        await store.recordFailedClaim(device.userId);
+      }
       if (result === 'not_found') {
         res.status(404).json({ error: 'Invalid pairing code' });
         return;

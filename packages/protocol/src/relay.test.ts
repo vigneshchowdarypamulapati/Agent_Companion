@@ -54,6 +54,11 @@ describe('ClaimPairingRequest schema', () => {
   it('rejects a missing code', () => {
     expect(ClaimPairingRequest.safeParse({}).success).toBe(false);
   });
+
+  it('rejects an unreasonably long code', () => {
+    expect(ClaimPairingRequest.safeParse({ code: 'A'.repeat(32) }).success).toBe(true);
+    expect(ClaimPairingRequest.safeParse({ code: 'A'.repeat(33) }).success).toBe(false);
+  });
 });
 
 describe('PollPairingRequest schema', () => {

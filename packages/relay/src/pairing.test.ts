@@ -60,6 +60,20 @@ describe('PairingService', () => {
     expect(await pairing.pollPairingCode(deviceCode)).toEqual({ status: 'expired' });
   });
 
+  it('the same account re-claiming its own code repeatedly (a double-tapped claim) never trips the per-code lockout', async () => {
+    const store = new InMemoryStore();
+    const pairing = new PairingService(store);
+    const { code, deviceCode } = await pairing.requestPairingCode('my-laptop');
+    expect(await pairing.claimPairingCode(code, 'user-1')).toBe('ok');
+
+    for (let i = 0; i < 20; i++) {
+      expect(await pairing.claimPairingCode(code, 'user-1')).toBe('already_claimed');
+    }
+
+    // Still redeemable — never got locked out by its own owner's retries.
+    expect((await pairing.pollPairingCode(deviceCode)).status).toBe('complete');
+  });
+
   it('a code cannot be claimed twice', async () => {
     const pairing = new PairingService(new InMemoryStore());
     const { code } = await pairing.requestPairingCode('my-laptop');

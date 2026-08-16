@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { Store } from './store.js';
+import { CLAIM_FAILURE_LIMIT, CLAIM_FAILURE_WINDOW_MS, type Store } from './store.js';
 
 export function runStoreContractTests(label: string, makeStore: (now?: () => number) => Store | Promise<Store>): void {
   describe(label, () => {
@@ -144,6 +144,81 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
       const store = await makeStore();
       const pairing = await store.createPairingCode('my-laptop');
       expect(await store.claimPairingCode(pairing.code, 'user-1')).toBe('ok');
+    });
+
+    it('the same account re-claiming its own already-claimed code never increments the lockout counter — a double-tap cannot brick the account\'s own pairing', async () => {
+      const store = await makeStore();
+      const pairing = await store.createPairingCode('my-laptop');
+      expect(await store.claimPairingCode(pairing.code, 'user-1')).toBe('ok');
+
+      // Far more than MAX_PAIRING_CODE_ATTEMPTS re-claims by the SAME
+      // account that already owns the code — none of them should count as
+      // a failure, since none of them is a guess.
+      for (let i = 0; i < 20; i++) {
+        expect(await store.claimPairingCode(pairing.code, 'user-1')).toBe('already_claimed');
+      }
+      const found = await store.getPairingCodeByDeviceCode(pairing.deviceCode);
+      expect(found?.failedAttempts).toBe(0);
+
+      // The daemon's poll still redeems normally — the code was never locked out.
+      expect(await store.redeemPairingCode(pairing.deviceCode)).toBeDefined();
+    });
+
+    it('a re-claim by a DIFFERENT account still counts toward the lockout, even after the same account has re-claimed many times', async () => {
+      const store = await makeStore();
+      const pairing = await store.createPairingCode('my-laptop');
+      expect(await store.claimPairingCode(pairing.code, 'user-1')).toBe('ok');
+
+      // Same-account re-claims: free, per the test above.
+      for (let i = 0; i < 10; i++) {
+        await store.claimPairingCode(pairing.code, 'user-1');
+      }
+      // A different account's attempts still count.
+      for (let i = 0; i < 4; i++) {
+        expect(await store.claimPairingCode(pairing.code, 'user-2')).toBe('already_claimed');
+      }
+      expect(await store.claimPairingCode(pairing.code, 'user-2')).toBe('expired');
+    });
+
+    it('isClaimRateLimited is false for an account with no recorded failures', async () => {
+      const store = await makeStore();
+      expect(await store.isClaimRateLimited('user-1')).toBe(false);
+    });
+
+    it('recordFailedClaim accumulates and isClaimRateLimited trips once CLAIM_FAILURE_LIMIT is reached', async () => {
+      const store = await makeStore();
+      for (let i = 0; i < CLAIM_FAILURE_LIMIT - 1; i++) {
+        await store.recordFailedClaim('user-1');
+        expect(await store.isClaimRateLimited('user-1')).toBe(false);
+      }
+      await store.recordFailedClaim('user-1');
+      expect(await store.isClaimRateLimited('user-1')).toBe(true);
+    });
+
+    it('the persistent claim-failure counter is scoped per account', async () => {
+      const store = await makeStore();
+      for (let i = 0; i < CLAIM_FAILURE_LIMIT; i++) {
+        await store.recordFailedClaim('user-1');
+      }
+      expect(await store.isClaimRateLimited('user-1')).toBe(true);
+      expect(await store.isClaimRateLimited('user-2')).toBe(false);
+    });
+
+    it('the persistent claim-failure window resets after CLAIM_FAILURE_WINDOW_MS, surviving as a fresh window rather than staying locked forever', async () => {
+      let now = 1_000_000;
+      const store = await makeStore(() => now);
+      for (let i = 0; i < CLAIM_FAILURE_LIMIT; i++) {
+        await store.recordFailedClaim('user-1');
+      }
+      expect(await store.isClaimRateLimited('user-1')).toBe(true);
+
+      now += CLAIM_FAILURE_WINDOW_MS + 1;
+      expect(await store.isClaimRateLimited('user-1')).toBe(false);
+
+      // And a single new failure after the reset starts a fresh window, not
+      // an already-tripped one.
+      await store.recordFailedClaim('user-1');
+      expect(await store.isClaimRateLimited('user-1')).toBe(false);
     });
 
     it('claimPairingCode returns expired for an expired code', async () => {

@@ -269,6 +269,81 @@ describe('relay server', () => {
     expect(blocked.body).toEqual({ error: 'Too many pairing attempts, try again later' });
   });
 
+  it('the persistent per-account claim-failure limiter survives a process restart, unlike the in-memory claimLimiter', async () => {
+    // One shared Store across two separate createRelayServer() calls, each
+    // with its own brand-new in-memory claimLimiter — simulating a restart
+    // between them. The store is what's actually durable.
+    const store = new InMemoryStore();
+
+    const firstServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => firstServer.listen(0, resolve));
+    const browserToken = await registerBrowser(firstServer, 'phone');
+
+    // Exactly CLAIM_FAILURE_LIMIT (10) failed guesses — enough to trip the
+    // persistent limiter, but not the 11th call the in-memory claimLimiter
+    // would need to trip on its own, so this test is really exercising the
+    // persistent one.
+    for (let i = 0; i < 10; i++) {
+      const res = await request(firstServer)
+        .post('/pairing/claim')
+        .set('Authorization', `Bearer ${browserToken}`)
+        .send({ code: String(i).padStart(8, '0') });
+      expect(res.status).toBe(404);
+    }
+    await new Promise<void>((resolve) => firstServer.close(() => resolve()));
+
+    // "Restart": a fresh server, fresh in-memory claimLimiter, same store.
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    // A real, currently-valid code — proving the 429 below is the account
+    // limiter firing, not an incidental 404/410 the fresh in-memory
+    // claimLimiter would have let through anyway.
+    const codeRes = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'laptop' });
+    const res = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({ code: codeRes.body.code });
+
+    expect(res.status).toBe(429);
+    expect(res.body).toEqual({ error: 'Too many pairing attempts, try again later' });
+  });
+
+  it('a rate-limited account gets the same 429 whether the submitted code exists or not — the limiter cannot be used to enumerate codes', async () => {
+    const store = new InMemoryStore();
+    httpServer = await createRelayServer({ store, pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    // Look the account's real userId up directly through the store (the
+    // API itself deliberately never exposes it — see GET /devices/me in
+    // README.md) so failures can be pre-seeded against the right account.
+    const tokenHash = createHash('sha256').update(browserToken).digest('hex');
+    const device = await store.getDeviceByTokenHash(tokenHash);
+    const userId = device!.userId;
+
+    for (let i = 0; i < 10; i++) await store.recordFailedClaim(userId);
+    expect(await store.isClaimRateLimited(userId)).toBe(true);
+
+    const codeRes = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'laptop' });
+
+    // Both a real, currently-claimable code and a nonexistent one get
+    // identical 429s once the account itself is over its persistent
+    // limit — checked before either code is even looked up.
+    const withRealCode = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({ code: codeRes.body.code });
+    const withFakeCode = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({ code: 'ZZZZZZZZ' });
+
+    expect(withRealCode.status).toBe(429);
+    expect(withFakeCode.status).toBe(429);
+    expect(withRealCode.body).toEqual(withFakeCode.body);
+  });
+
   it('accepts a pairing code typed with different case, hyphens, and whitespace', async () => {
     httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));

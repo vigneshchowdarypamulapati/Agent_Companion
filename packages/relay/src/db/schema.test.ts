@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { createDbClient, type Db } from './client.js';
 import type { Pool } from 'pg';
 import { runMigrations } from './migrate.js';
-import { users, devices, pairingCodes, sessions, sessionEvents } from './schema.js';
+import { users, devices, pairingCodes, claimFailures, sessions, sessionEvents } from './schema.js';
 
 // vitest.config.ts (Step 5) already loads packages/relay/.env, so
 // DATABASE_URL is always set here in practice — no local fallback needed
@@ -51,6 +51,12 @@ describe('schema and migrations', () => {
       })
       .returning();
     expect(pairing.code).toBeDefined();
+
+    const [claimFailure] = await db
+      .insert(claimFailures)
+      .values({ userId: user.id, count: 1, windowStart: 1 })
+      .returning();
+    expect(claimFailure.userId).toBe(user.id);
 
     const [session] = await db
       .insert(sessions)

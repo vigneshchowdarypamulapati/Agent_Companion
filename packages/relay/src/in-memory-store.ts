@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { PushSubscriptionPayload, SessionEvent, SessionStatus } from '@companion/protocol';
 import {
+  CLAIM_FAILURE_LIMIT,
+  CLAIM_FAILURE_WINDOW_MS,
   generatePairingCode,
   MAX_PAIRING_CODE_ATTEMPTS,
   type Device,
@@ -21,6 +23,7 @@ export class InMemoryStore implements Store {
   private devicesByTokenHash = new Map<string, string>();
   private pairingCodes = new Map<string, PairingCode>();
   private pairingCodesByDeviceCode = new Map<string, string>();
+  private claimFailures = new Map<string, { count: number; windowStart: number }>();
   private sessions = new Map<string, SessionRecord>();
   private events = new Map<string, StoredSessionEvent[]>();
   private nextSeq = 1;
@@ -100,12 +103,13 @@ export class InMemoryStore implements Store {
    * A code that has racked up `MAX_PAIRING_CODE_ATTEMPTS` failed claims is
    * treated exactly like an expired one — same external result, so nothing
    * distinguishes "expired" from "locked out by too many failed claims" for
-   * a caller. Every failure against a code that still exists and hasn't
-   * already hit the cap counts toward it; a code that's already been
-   * claimed by someone else is the only way to fail against a
-   * still-live row (an unclaimed, unexpired, under-cap code always succeeds
-   * here), but recording that failure is still what makes the cap durable
-   * against repeated re-claim attempts.
+   * a caller. A code that's already been claimed by someone *else* is the
+   * only way to fail against a still-live row (an unclaimed, unexpired,
+   * under-cap code always succeeds here), and that's what counts toward the
+   * cap. A re-claim by the *same* account that already owns the code does
+   * NOT increment: that's the ordinary retry/double-tap in the ~2s window
+   * before the daemon's poll redeems it, not a guess, and penalizing it
+   * would let a legitimate user brick their own pairing.
    */
   async claimPairingCode(code: string, userId: string): Promise<'ok' | 'not_found' | 'expired' | 'already_claimed'> {
     const pairing = this.pairingCodes.get(code);
@@ -113,8 +117,10 @@ export class InMemoryStore implements Store {
     if (pairing.failedAttempts >= MAX_PAIRING_CODE_ATTEMPTS) return 'expired';
     if (pairing.expiresAt < this.now()) return 'expired';
     if (pairing.userId) {
-      pairing.failedAttempts += 1;
-      if (pairing.failedAttempts >= MAX_PAIRING_CODE_ATTEMPTS) return 'expired';
+      if (pairing.userId !== userId) {
+        pairing.failedAttempts += 1;
+        if (pairing.failedAttempts >= MAX_PAIRING_CODE_ATTEMPTS) return 'expired';
+      }
       return 'already_claimed';
     }
     pairing.userId = userId;
@@ -139,6 +145,22 @@ export class InMemoryStore implements Store {
     if (!pairing || !pairing.userId || pairing.redeemed) return undefined;
     pairing.redeemed = true;
     return { ...pairing };
+  }
+
+  async isClaimRateLimited(userId: string): Promise<boolean> {
+    const state = this.claimFailures.get(userId);
+    if (!state) return false;
+    if (this.now() - state.windowStart > CLAIM_FAILURE_WINDOW_MS) return false;
+    return state.count >= CLAIM_FAILURE_LIMIT;
+  }
+
+  async recordFailedClaim(userId: string): Promise<void> {
+    const state = this.claimFailures.get(userId);
+    if (!state || this.now() - state.windowStart > CLAIM_FAILURE_WINDOW_MS) {
+      this.claimFailures.set(userId, { count: 1, windowStart: this.now() });
+      return;
+    }
+    state.count += 1;
   }
 
   async upsertSession(session: SessionRecord): Promise<void> {

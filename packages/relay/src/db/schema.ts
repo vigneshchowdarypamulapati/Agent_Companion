@@ -74,11 +74,31 @@ export const pairingCodes = pgTable('pairing_codes', {
   expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
   redeemed: boolean('redeemed').notNull().default(false),
   // Failed-claim lockout counter (see MAX_PAIRING_CODE_ATTEMPTS in
-  // store.ts): persists across restarts/redeploys, unlike an in-memory
-  // rate limiter, so it's what actually bounds an online guessing attack
-  // long-term. Defaulted so existing rows keep working after this column
-  // was added.
+  // store.ts): bounds repeated re-claim attempts against a code an
+  // attacker has already obtained by some other means. It does NOT bound
+  // blind guessing of an unknown code — see claim_failures below for that.
+  // Defaulted so existing rows keep working after this column was added.
   failedAttempts: integer('failed_attempts').notNull().default(0),
+});
+
+// Persistent per-account failed-`/pairing/claim`-attempt counter (see
+// CLAIM_FAILURE_LIMIT / CLAIM_FAILURE_WINDOW_MS in store.ts). This — not
+// pairingCodes.failedAttempts above — is what actually bounds an online
+// guessing attack long-term: a wrong guess matches no pairing_codes row at
+// all (code is that table's primary key), so nothing there can count it,
+// whereas this table is keyed by the guessing account and updated
+// regardless of whether the guessed code exists. A separate table rather
+// than columns on `users`: this is high-churn, disposable rate-limiting
+// state, not account identity, and keeping it off `users` avoids UPDATE
+// churn on an otherwise-static table plus the need for nullable columns on
+// every user who has never failed a claim. No FK to users.id for the same
+// reason the rest of this file has none (see the top-of-file comment) —
+// userId here is the same opaque scoping key convention used everywhere
+// else, including in the contract-test suite.
+export const claimFailures = pgTable('claim_failures', {
+  userId: text('user_id').primaryKey(),
+  count: integer('count').notNull().default(0),
+  windowStart: bigint('window_start', { mode: 'number' }).notNull(),
 });
 
 export const sessions = pgTable('sessions', {

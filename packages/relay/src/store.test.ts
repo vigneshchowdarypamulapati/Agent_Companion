@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { randomBytes } from 'node:crypto';
 import {
   formatPairingCodeForDisplay,
   generatePairingCode,
@@ -78,83 +77,105 @@ describe('formatPairingCodeForDisplay', () => {
 
 describe('randomAlphabetIndex — proof the rejection sampling is unbiased', () => {
   /**
-   * Pearson's chi-squared goodness-of-fit statistic against a uniform
-   * distribution over `bucketCount` buckets. Comparing against the
-   * chi-squared critical value at 0.001 significance keeps this from
-   * flaking under ordinary sampling noise, while still failing hard for a
-   * biased generator (see the modulo-bias case below, which fails this
-   * check reliably).
+   * Deterministic, not statistical: every test below feeds a fixed,
+   * hand-picked byte sequence and asserts the exact index and byte-count
+   * consumed, rather than sampling the real RNG and checking a
+   * distribution. A statistical (e.g. chi-squared) test over real random
+   * output is inherently probabilistic — it has a nonzero false-failure
+   * rate by construction, no matter how small — and one such test did
+   * fail in a real CI run despite the implementation being correct.
+   * `randomAlphabetIndex`'s optional `randomByte` parameter exists
+   * specifically so these tests can supply an exact queue of bytes instead.
    */
-  function chiSquared(counts: number[], expectedPerBucket: number): number {
-    return counts.reduce((sum, observed) => sum + (observed - expectedPerBucket) ** 2 / expectedPerBucket, 0);
+  function queueOf(bytes: number[]): () => number {
+    let i = 0;
+    return () => {
+      if (i >= bytes.length) {
+        throw new Error(`byte queue exhausted after ${i} draws — randomAlphabetIndex drew more than expected`);
+      }
+      return bytes[i++];
+    };
   }
 
-  // Chi-squared critical values at p=0.001, indexed by degrees of freedom
-  // (bucketCount - 1). Source: standard chi-squared distribution tables.
-  const CRITICAL_VALUE_P001: Record<number, number> = {
-    5: 20.515, // 6 buckets
-    9: 27.877, // 10 buckets
-    31: 61.098, // 32 buckets (PAIRING_CODE_ALPHABET's own size)
-  };
-
-  it('is uniform over the actual 32-symbol pairing-code alphabet size (256 divides evenly — the easy case)', () => {
-    const bucketCount = 32;
-    const samples = 320_000;
-    const counts = new Array(bucketCount).fill(0);
-    for (let i = 0; i < samples; i++) counts[randomAlphabetIndex(bucketCount)]++;
-
-    expect(chiSquared(counts, samples / bucketCount)).toBeLessThan(CRITICAL_VALUE_P001[bucketCount - 1]);
-  });
-
-  it('is uniform over an alphabet size that does NOT divide 256 evenly — the case that actually exercises rejection', () => {
-    // 256 / 6 = 42.67: a naive `byte % 6` would over-represent indices 0-3
-    // (which get an extra hit in every 256-byte cycle) relative to 4-5.
-    // Rejection sampling must still come out uniform here.
-    const bucketCount = 6;
-    const samples = 120_000;
-    const counts = new Array(bucketCount).fill(0);
-    for (let i = 0; i < samples; i++) counts[randomAlphabetIndex(bucketCount)]++;
-
-    expect(chiSquared(counts, samples / bucketCount)).toBeLessThan(CRITICAL_VALUE_P001[bucketCount - 1]);
-  });
-
-  it('is uniform over a second non-dividing alphabet size (10)', () => {
-    const bucketCount = 10;
-    const samples = 200_000;
-    const counts = new Array(bucketCount).fill(0);
-    for (let i = 0; i < samples; i++) counts[randomAlphabetIndex(bucketCount)]++;
-
-    expect(chiSquared(counts, samples / bucketCount)).toBeLessThan(CRITICAL_VALUE_P001[bucketCount - 1]);
-  });
-
-  it('demonstrates naive `byte % alphabetSize` IS measurably biased for a non-dividing size — the failure mode rejection sampling avoids', () => {
-    // Not testing our own code here — a local reference implementation of
-    // the naive approach the brief calls out, kept only to show the chi-
-    // squared check above would actually catch this class of bug.
-    function naiveModulo(alphabetSize: number): number {
-      return randomBytes(1)[0] % alphabetSize;
+  it('maps every acceptable byte to byte % alphabetSize, for a size that divides 256 evenly (32 — the real alphabet)', () => {
+    // maxAcceptable = floor(256/32)*32 = 256, so every byte 0-255 is
+    // acceptable and this exhaustively covers every input the function can
+    // ever see for the real pairing-code alphabet: none of the 256
+    // possible bytes is ever rejected, and each is consumed in exactly one
+    // draw.
+    const hitsPerIndex = new Array(32).fill(0);
+    for (let byte = 0; byte < 256; byte++) {
+      const index = randomAlphabetIndex(32, queueOf([byte]));
+      expect(index).toBe(byte % 32);
+      hitsPerIndex[index]++;
     }
-
-    const bucketCount = 6;
-    const samples = 120_000;
-    const counts = new Array(bucketCount).fill(0);
-    for (let i = 0; i < samples; i++) counts[naiveModulo(bucketCount)]++;
-
-    expect(chiSquared(counts, samples / bucketCount)).toBeGreaterThan(CRITICAL_VALUE_P001[bucketCount - 1]);
+    // 256/32 = 8 exactly: exhaustive enumeration proves each of the 32
+    // indices is reachable by exactly 8 of the 256 possible bytes — a
+    // combinatorial proof of uniformity, not a sampled approximation of one.
+    expect(hitsPerIndex).toEqual(new Array(32).fill(8));
   });
 
-  it('never returns an out-of-range index', () => {
-    for (let i = 0; i < 10_000; i++) {
-      const index = randomAlphabetIndex(6);
-      expect(index).toBeGreaterThanOrEqual(0);
-      expect(index).toBeLessThan(6);
+  it('maps every acceptable byte to byte % alphabetSize, for a size that does NOT divide 256 evenly (6)', () => {
+    // maxAcceptable = floor(256/6)*6 = 252, so bytes 0-251 are acceptable
+    // and 252-255 must be rejected (covered by the next two tests). This
+    // exhaustively covers the acceptable range.
+    const hitsPerIndex = new Array(6).fill(0);
+    for (let byte = 0; byte < 252; byte++) {
+      const index = randomAlphabetIndex(6, queueOf([byte]));
+      expect(index).toBe(byte % 6);
+      hitsPerIndex[index]++;
     }
+    // 252/6 = 42 exactly: every index gets exactly 42 of the 252 acceptable
+    // bytes — proof the rejection boundary (252) was placed correctly, not
+    // just that individual mappings are right.
+    expect(hitsPerIndex).toEqual(new Array(6).fill(42));
+  });
+
+  it('rejects and resamples every byte at/above maxAcceptable, for a non-dividing size (6, boundary 252)', () => {
+    for (const rejectedByte of [252, 253, 254, 255]) {
+      // The rejected byte is drawn first and must be discarded (not
+      // silently accepted and reduced mod 6, which would bias indices
+      // 0-3); the queue then yields 17, an acceptable byte, on the retry.
+      const index = randomAlphabetIndex(6, queueOf([rejectedByte, 17]));
+      expect(index).toBe(17 % 6);
+    }
+  });
+
+  it('handles multiple consecutive rejections before an accept, and terminates', () => {
+    // Four rejected bytes in a row, then one acceptable one — proves the
+    // `while (true)` loop doesn't mishandle repeated rejection and does
+    // eventually terminate rather than looping past the first accept.
+    const index = randomAlphabetIndex(6, queueOf([252, 253, 254, 255, 9]));
+    expect(index).toBe(9 % 6);
+  });
+
+  it('demonstrates naive `byte % alphabetSize` IS biased for a non-dividing size — deterministically, by exhaustive enumeration', () => {
+    // Not testing our own code — a reference count of what plain modulo
+    // over every possible byte value would produce, kept only to make the
+    // magnitude of the bug this avoids concrete. No randomness involved.
+    const alphabetSize = 6;
+    const counts = new Array(alphabetSize).fill(0);
+    for (let byte = 0; byte < 256; byte++) counts[byte % alphabetSize]++;
+
+    // 256 = 42*6 + 4: naive modulo gives indices 0-3 one extra hit each
+    // relative to 4-5 — a real, deterministic, ~2.4% bias that rejection
+    // sampling (proven uniform above) avoids entirely.
+    expect(counts).toEqual([43, 43, 43, 43, 42, 42]);
+    expect(new Set(counts).size).toBeGreaterThan(1);
   });
 
   it('rejects alphabet sizes outside [1, 256]', () => {
     expect(() => randomAlphabetIndex(0)).toThrow(RangeError);
     expect(() => randomAlphabetIndex(257)).toThrow(RangeError);
     expect(() => randomAlphabetIndex(1.5)).toThrow(RangeError);
+  });
+
+  it('with the default real byte source, never returns an out-of-range index (hard invariant, not a distribution check)', () => {
+    for (let i = 0; i < 10_000; i++) {
+      const index = randomAlphabetIndex(6);
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(index).toBeLessThan(6);
+    }
   });
 });
 

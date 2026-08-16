@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, gt, gte, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import type { PushSubscriptionPayload, SessionEvent, SessionStatus } from '@companion/protocol';
 import {
+  CLAIM_FAILURE_LIMIT,
+  CLAIM_FAILURE_WINDOW_MS,
   generatePairingCode,
   MAX_PAIRING_CODE_ATTEMPTS,
   type Device,
@@ -13,7 +15,7 @@ import {
   type User,
 } from './store.js';
 import type { Db } from './db/client.js';
-import { users, devices, pairingCodes, sessions, sessionEvents } from './db/schema.js';
+import { users, devices, pairingCodes, claimFailures, sessions, sessionEvents } from './db/schema.js';
 
 const PAIRING_CODE_TTL_MS = 5 * 60 * 1000;
 
@@ -115,10 +117,12 @@ export class PostgresStore implements Store {
    * the existing not_found/expired/already_claimed non-enumeration
    * property. The only way to fail against a row that still exists,
    * is unexpired, and is under the cap is for it to already be claimed by
-   * someone else — an unclaimed, unexpired, under-cap code always matches
-   * the UPDATE above — so that's the only case that increments the
-   * counter; this is what makes the cap durable against repeated re-claim
-   * attempts on an already-claimed code.
+   * someone — an unclaimed, unexpired, under-cap code always matches the
+   * UPDATE above. Of that, only a claim by someone *other* than the current
+   * owner counts toward the cap: a re-claim by the same account that
+   * already owns the code is the ordinary retry/double-tap in the ~2s
+   * window before the daemon's poll redeems it, not a guess, and counting
+   * it would let a legitimate user brick their own pairing.
    */
   async claimPairingCode(code: string, userId: string): Promise<'ok' | 'not_found' | 'expired' | 'already_claimed'> {
     const [claimed] = await this.db
@@ -139,6 +143,7 @@ export class PostgresStore implements Store {
     if (!pairing) return 'not_found';
     if (pairing.failedAttempts >= MAX_PAIRING_CODE_ATTEMPTS) return 'expired';
     if (pairing.expiresAt < this.now()) return 'expired';
+    if (pairing.userId === userId) return 'already_claimed';
 
     const [updated] = await this.db
       .update(pairingCodes)
@@ -172,6 +177,38 @@ export class PostgresStore implements Store {
       )
       .returning();
     return redeemed;
+  }
+
+  async isClaimRateLimited(userId: string): Promise<boolean> {
+    const [row] = await this.db.select().from(claimFailures).where(eq(claimFailures.userId, userId));
+    if (!row) return false;
+    if (this.now() - row.windowStart > CLAIM_FAILURE_WINDOW_MS) return false;
+    return row.count >= CLAIM_FAILURE_LIMIT;
+  }
+
+  /**
+   * Read-then-write, matching InMemoryStore's algorithm exactly: if no
+   * window is open yet, or the open one is stale, upsert a fresh one at
+   * count 1; otherwise increment in place. This isn't wrapped in a
+   * transaction/row lock, so two failed claims for the same account
+   * arriving in the same instant could race and one increment could be
+   * lost — an accepted trade-off for a rate limiter (not a security
+   * invariant like pairing-code claiming): the only possible effect is
+   * this limiter trips very slightly later than the nominal cap under
+   * heavy concurrent abuse from one account, never that it locks out an
+   * unrelated account or fails to eventually trip at all.
+   */
+  async recordFailedClaim(userId: string): Promise<void> {
+    const now = this.now();
+    const [row] = await this.db.select().from(claimFailures).where(eq(claimFailures.userId, userId));
+    if (!row || now - row.windowStart > CLAIM_FAILURE_WINDOW_MS) {
+      await this.db
+        .insert(claimFailures)
+        .values({ userId, count: 1, windowStart: now })
+        .onConflictDoUpdate({ target: claimFailures.userId, set: { count: 1, windowStart: now } });
+      return;
+    }
+    await this.db.update(claimFailures).set({ count: row.count + 1 }).where(eq(claimFailures.userId, userId));
   }
 
   async upsertSession(session: SessionRecord): Promise<void> {
