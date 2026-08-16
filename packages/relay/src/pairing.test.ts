@@ -30,7 +30,34 @@ describe('PairingService', () => {
 
   it('claiming an unknown code returns not_found', async () => {
     const pairing = new PairingService(new InMemoryStore());
-    expect(await pairing.claimPairingCode('000000', 'user-1')).toBe('not_found');
+    expect(await pairing.claimPairingCode('ZZZZZZZZ', 'user-1')).toBe('not_found');
+  });
+
+  it('claiming a code normalizes case, hyphens, and whitespace before matching', async () => {
+    const pairing = new PairingService(new InMemoryStore());
+    const { code } = await pairing.requestPairingCode('my-laptop');
+    const grouped = `${code.slice(0, 4)}-${code.slice(4)}`;
+
+    expect(await pairing.claimPairingCode(` ${grouped.toLowerCase()} `, 'user-1')).toBe('ok');
+  });
+
+  it('a code is invalidated after 5 failed claims, indistinguishable from expired', async () => {
+    const store = new InMemoryStore();
+    const pairing = new PairingService(store);
+    const { code, deviceCode } = await pairing.requestPairingCode('my-laptop');
+    expect(await pairing.claimPairingCode(code, 'user-1')).toBe('ok');
+
+    for (let i = 0; i < 4; i++) {
+      expect(await pairing.claimPairingCode(code, 'user-2')).toBe('already_claimed');
+    }
+    // The 5th failed attempt trips the lockout.
+    expect(await pairing.claimPairingCode(code, 'user-2')).toBe('expired');
+    // And it stays that way, not reverting to already_claimed.
+    expect(await pairing.claimPairingCode(code, 'user-2')).toBe('expired');
+
+    // The daemon's own poll reports the same 'expired' status — no separate
+    // signal leaks that this was a lockout rather than ordinary TTL expiry.
+    expect(await pairing.pollPairingCode(deviceCode)).toEqual({ status: 'expired' });
   });
 
   it('a code cannot be claimed twice', async () => {

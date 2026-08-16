@@ -67,7 +67,7 @@ browser-registration gate in `App.tsx`:
   (activity feed, modified files, permission prompt, controls) — this is
   what `Dashboard` used to be before multi-session support.
 - `/settings` — `SettingsScreen`: this device's paired info (name, type,
-  paired date), a "Pair a daemon" form for entering the 6-digit code a
+  paired date), a "Pair a daemon" form for entering the pairing code a
   daemon prints on first run (`POST /pairing/claim` via `src/api/pairing.ts`
   — this is the only place in the app that links a daemon to the account),
   an "Unpair this device" action behind a confirm step, and (when the

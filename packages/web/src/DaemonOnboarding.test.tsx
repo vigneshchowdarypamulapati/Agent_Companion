@@ -26,17 +26,17 @@ describe('DaemonOnboarding', () => {
     const claim = vi.spyOn(pairingApi, 'claimPairingCode').mockResolvedValue(undefined);
     renderOnboarding('tok-1');
 
-    await userEvent.type(screen.getByLabelText('Pairing code'), '123456');
+    await userEvent.type(screen.getByLabelText('Pairing code'), 'ABCD-1234');
     await userEvent.click(screen.getByRole('button', { name: 'Pair daemon' }));
 
-    expect(claim).toHaveBeenCalledWith('tok-1', '123456');
+    expect(claim).toHaveBeenCalledWith('tok-1', 'ABCD-1234');
   });
 
   it('shows a waiting-for-first-session confirmation after a successful pair', async () => {
     vi.spyOn(pairingApi, 'claimPairingCode').mockResolvedValue(undefined);
     renderOnboarding();
 
-    await userEvent.type(screen.getByLabelText('Pairing code'), '123456');
+    await userEvent.type(screen.getByLabelText('Pairing code'), 'ABCD-1234');
     await userEvent.click(screen.getByRole('button', { name: 'Pair daemon' }));
 
     expect(await screen.findByText('Daemon paired')).toBeInTheDocument();
@@ -47,7 +47,7 @@ describe('DaemonOnboarding', () => {
     vi.spyOn(pairingApi, 'claimPairingCode').mockRejectedValue(new Error('Invalid pairing code'));
     renderOnboarding();
 
-    await userEvent.type(screen.getByLabelText('Pairing code'), '999999');
+    await userEvent.type(screen.getByLabelText('Pairing code'), 'ZZZZ-ZZZZ');
     await userEvent.click(screen.getByRole('button', { name: 'Pair daemon' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Invalid pairing code');
@@ -57,7 +57,7 @@ describe('DaemonOnboarding', () => {
     vi.spyOn(pairingApi, 'claimPairingCode').mockRejectedValue(new UnauthorizedError());
     const onUnauthorized = renderOnboarding();
 
-    await userEvent.type(screen.getByLabelText('Pairing code'), '123456');
+    await userEvent.type(screen.getByLabelText('Pairing code'), 'ABCD-1234');
     await userEvent.click(screen.getByRole('button', { name: 'Pair daemon' }));
 
     await vi.waitFor(() => expect(onUnauthorized).toHaveBeenCalled());

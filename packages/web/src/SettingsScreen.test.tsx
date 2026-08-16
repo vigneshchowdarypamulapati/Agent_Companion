@@ -177,10 +177,10 @@ describe('SettingsScreen', () => {
       renderSettings();
 
       await screen.findByText('Chrome on Mac');
-      await userEvent.type(screen.getByLabelText(/pairing code/i), '123456');
+      await userEvent.type(screen.getByLabelText(/pairing code/i), 'ABCD-1234');
       await userEvent.click(screen.getByRole('button', { name: /pair daemon/i }));
 
-      expect(claim).toHaveBeenCalledWith('tok-1', '123456');
+      expect(claim).toHaveBeenCalledWith('tok-1', 'ABCD-1234');
     });
 
     it('the submit button is disabled until a code is entered', async () => {
@@ -190,7 +190,7 @@ describe('SettingsScreen', () => {
 
       await screen.findByText('Chrome on Mac');
       expect(screen.getByRole('button', { name: /pair daemon/i })).toBeDisabled();
-      await userEvent.type(screen.getByLabelText(/pairing code/i), '123456');
+      await userEvent.type(screen.getByLabelText(/pairing code/i), 'ABCD-1234');
       expect(screen.getByRole('button', { name: /pair daemon/i })).toBeEnabled();
     });
 
@@ -201,7 +201,7 @@ describe('SettingsScreen', () => {
       renderSettings();
 
       await screen.findByText('Chrome on Mac');
-      await userEvent.type(screen.getByLabelText(/pairing code/i), '123456');
+      await userEvent.type(screen.getByLabelText(/pairing code/i), 'ABCD-1234');
       await userEvent.click(screen.getByRole('button', { name: /pair daemon/i }));
 
       expect(await screen.findByText(/daemon paired/i)).toBeInTheDocument();
@@ -217,7 +217,7 @@ describe('SettingsScreen', () => {
       renderSettings();
 
       await screen.findByText('Chrome on Mac');
-      await userEvent.type(screen.getByLabelText(/pairing code/i), '123456');
+      await userEvent.type(screen.getByLabelText(/pairing code/i), 'ABCD-1234');
       await userEvent.click(screen.getByRole('button', { name: /pair daemon/i }));
 
       expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -233,7 +233,7 @@ describe('SettingsScreen', () => {
       const onUnpaired = renderSettings();
 
       await screen.findByText('Chrome on Mac');
-      await userEvent.type(screen.getByLabelText(/pairing code/i), '123456');
+      await userEvent.type(screen.getByLabelText(/pairing code/i), 'ABCD-1234');
       await userEvent.click(screen.getByRole('button', { name: /pair daemon/i }));
 
       await waitFor(() => expect(onUnpaired).toHaveBeenCalled());

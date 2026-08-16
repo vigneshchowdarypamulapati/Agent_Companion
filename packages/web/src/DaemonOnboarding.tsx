@@ -50,8 +50,11 @@ export default function DaemonOnboarding({ token, onUnauthorized }: DaemonOnboar
       </div>
       <ol className="text-sm text-ink-muted space-y-1 list-decimal list-inside">
         <li>Start the Companion daemon on the machine you run Claude Code on.</li>
-        <li>It prints a 6-digit code in the terminal.</li>
-        <li>Enter that code below — it expires after 5 minutes, so just restart the daemon for a fresh one if it does.</li>
+        <li>It prints a code (like <code>ABCD-1234</code>) in the terminal.</li>
+        <li>
+          Enter that code below — case doesn't matter and the hyphen is optional. It expires after 5 minutes, so
+          just restart the daemon for a fresh one if it does.
+        </li>
       </ol>
       <form onSubmit={handleSubmit} className="space-y-3">
         <label htmlFor="onboarding-pairing-code" className="block text-sm text-ink-muted">
@@ -61,9 +64,10 @@ export default function DaemonOnboarding({ token, onUnauthorized }: DaemonOnboar
           id="onboarding-pairing-code"
           name="onboarding-pairing-code"
           type="text"
-          inputMode="numeric"
+          inputMode="text"
           autoComplete="one-time-code"
-          maxLength={6}
+          autoCapitalize="characters"
+          maxLength={12}
           value={code}
           onChange={(e) => setCode(e.target.value)}
           className="w-full rounded-md bg-canvas px-3 py-2 tracking-widest"

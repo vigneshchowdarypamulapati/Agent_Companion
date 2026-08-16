@@ -56,7 +56,7 @@ describe('getOrCreateDeviceToken', () => {
         return {
           ok: true,
           status: 201,
-          json: async () => ({ code: '123456', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
+          json: async () => ({ code: 'ABCD1234', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
         };
       }
       if (url.endsWith('/pairing/poll')) {
@@ -80,6 +80,29 @@ describe('getOrCreateDeviceToken', () => {
     expect(persisted).toEqual({ token: 'secret-token', deviceId: 'device-1' });
   });
 
+  it('prints the pairing code grouped as XXXX-XXXX for typeability, not the raw unbroken string', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'companion-device-'));
+    const tokenPath = join(dir, 'device.json');
+    const fetchFn: FetchLike = async (url) => {
+      if (url.endsWith('/pairing/request-code')) {
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({ code: 'ABCD1234', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ status: 'complete', token: 'secret-token', deviceId: 'device-1' }) };
+    };
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await getOrCreateDeviceToken({ relayHttpUrl: 'http://x', deviceName: 'laptop', tokenPath, fetchFn });
+      expect(logSpy).toHaveBeenCalledWith('Pairing code: ABCD-1234');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('keeps polling while pending, then returns once claimed', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     dir = await mkdtemp(join(tmpdir(), 'companion-device-'));
@@ -90,7 +113,7 @@ describe('getOrCreateDeviceToken', () => {
         return {
           ok: true,
           status: 201,
-          json: async () => ({ code: '123456', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
+          json: async () => ({ code: 'ABCD1234', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
         };
       }
       pollCount++;
@@ -123,7 +146,7 @@ describe('getOrCreateDeviceToken', () => {
         return {
           ok: true,
           status: 201,
-          json: async () => ({ code: '123456', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
+          json: async () => ({ code: 'ABCD1234', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
         };
       }
       pollCount++;
@@ -153,7 +176,7 @@ describe('getOrCreateDeviceToken', () => {
         return {
           ok: true,
           status: 201,
-          json: async () => ({ code: '123456', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
+          json: async () => ({ code: 'ABCD1234', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
         };
       }
       return { ok: false, status: 400, json: async () => ({}) };
@@ -177,7 +200,7 @@ describe('getOrCreateDeviceToken', () => {
         return {
           ok: true,
           status: 201,
-          json: async () => ({ code: '123456', deviceCode: 'devcode-1', expiresAt: Date.now() + 5000 }),
+          json: async () => ({ code: 'ABCD1234', deviceCode: 'devcode-1', expiresAt: Date.now() + 5000 }),
         };
       }
       pollCount++;
@@ -200,7 +223,7 @@ describe('getOrCreateDeviceToken', () => {
         return {
           ok: true,
           status: 201,
-          json: async () => ({ code: '123456', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
+          json: async () => ({ code: 'ABCD1234', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
         };
       }
       return { ok: true, status: 200, json: async () => ({ status: 'expired' }) };
@@ -221,7 +244,7 @@ describe('getOrCreateDeviceToken', () => {
         return {
           ok: true,
           status: 201,
-          json: async () => ({ code: '123456', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
+          json: async () => ({ code: 'ABCD1234', deviceCode: 'devcode-1', expiresAt: Date.now() + 60_000 }),
         };
       }
       return { ok: true, status: 200, json: async () => ({ status: 'complete', token: 'secret-token', deviceId: 'device-1' }) };

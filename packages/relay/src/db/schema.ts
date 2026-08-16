@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, text, bigint, bigserial, boolean, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, bigint, bigserial, boolean, integer, jsonb, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import type { PushSubscriptionPayload, SessionEvent } from '@companion/protocol';
 
 // No FK from userId/daemonDeviceId/sessionId back to their owning tables,
@@ -73,6 +73,12 @@ export const pairingCodes = pgTable('pairing_codes', {
   deviceName: text('device_name').notNull(),
   expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
   redeemed: boolean('redeemed').notNull().default(false),
+  // Failed-claim lockout counter (see MAX_PAIRING_CODE_ATTEMPTS in
+  // store.ts): persists across restarts/redeploys, unlike an in-memory
+  // rate limiter, so it's what actually bounds an online guessing attack
+  // long-term. Defaulted so existing rows keep working after this column
+  // was added.
+  failedAttempts: integer('failed_attempts').notNull().default(0),
 });
 
 export const sessions = pgTable('sessions', {

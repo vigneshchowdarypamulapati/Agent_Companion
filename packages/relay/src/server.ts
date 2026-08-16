@@ -70,10 +70,16 @@ export async function createRelayServer({
   const hub = new ConnectionHub(store, pubsub, undefined, undefined, pushSender);
   await hub.start();
 
-  // A pairing code is 6 digits (10^6) and lives 5 minutes. Unthrottled, that
-  // space is brute-forceable inside one code's lifetime by anyone who can sign
-  // up (signup is public), and a hit hijacks a stranger's daemon onto the
-  // attacker's account. Final design, per route:
+  // A pairing code is 8 Crockford-base32 characters (40 bits) and lives 5
+  // minutes. That space alone is not brute-forceable inside one code's
+  // lifetime, but this rate limiter plus the persistent per-code
+  // failed-attempt lockout (Store.claimPairingCode /
+  // MAX_PAIRING_CODE_ATTEMPTS) are still both required: this limiter is
+  // in-memory and resets on every restart/redeploy, while the per-code
+  // lockout is what survives that and actually bounds a sustained online
+  // guessing attack by anyone who can sign up (signup is public) — a hit
+  // hijacks a stranger's daemon onto the attacker's account. Final design,
+  // per route:
   // - /pairing/claim is keyed by the calling device's *account* (device.userId),
   //   not IP — it runs post-authentication, so the account is known and this is
   //   strictly tighter than keying by device (an account can't buy more claim

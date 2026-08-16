@@ -1,0 +1,1 @@
+ALTER TABLE "pairing_codes" ADD COLUMN "failed_attempts" integer DEFAULT 0 NOT NULL;

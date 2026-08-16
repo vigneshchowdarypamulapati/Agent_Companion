@@ -185,7 +185,7 @@ describe('relay server', () => {
     const res = await request(httpServer)
       .post('/pairing/claim')
       .set('Authorization', `Bearer ${browserToken}`)
-      .send({ code: '000000' });
+      .send({ code: 'ZZZZZZZZ' });
 
     expect(res.status).toBe(404);
   });
@@ -250,21 +250,71 @@ describe('relay server', () => {
 
     const browserToken = await registerBrowser(httpServer, 'phone');
 
-    // A 6-digit code is guessable inside its 5-minute life without this cap.
+    // This in-memory limiter is one of two independent defenses (see the
+    // comment above claimLimiter in server.ts) — the other, the persistent
+    // per-code failed-attempt lockout, is exercised separately below.
     for (let i = 0; i < 10; i++) {
       const res = await request(httpServer)
         .post('/pairing/claim')
         .set('Authorization', `Bearer ${browserToken}`)
-        .send({ code: String(i).padStart(6, '0') });
+        .send({ code: String(i).padStart(8, '0') });
       expect(res.status).toBe(404);
     }
 
     const blocked = await request(httpServer)
       .post('/pairing/claim')
       .set('Authorization', `Bearer ${browserToken}`)
-      .send({ code: '999999' });
+      .send({ code: 'ZZZZZZZZ' });
     expect(blocked.status).toBe(429);
     expect(blocked.body).toEqual({ error: 'Too many pairing attempts, try again later' });
+  });
+
+  it('accepts a pairing code typed with different case, hyphens, and whitespace', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const codeRes = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'laptop' });
+    const rawCode = codeRes.body.code as string;
+    const typedAsHumanWould = ` ${rawCode.slice(0, 4)}-${rawCode.slice(4)}`.toLowerCase();
+
+    const claimRes = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${browserToken}`)
+      .send({ code: typedAsHumanWould });
+
+    expect(claimRes.status).toBe(200);
+  });
+
+  it('invalidates a code after 5 failed claims, reporting 410 (same as expiry) instead of 409', async () => {
+    httpServer = await createRelayServer({ store: new InMemoryStore(), pubsub: new InMemoryPubSub(), identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    // Two independent accounts, so this exercises the persistent per-code
+    // lockout specifically, not the in-memory per-account claimLimiter
+    // (10/5min) covered by the test above — 5 attempts stays well under it.
+    const victimToken = await registerBrowser(httpServer, 'victim-phone', FAKE_CLERK_TOKEN);
+    const attackerToken = await registerBrowser(httpServer, 'attacker-phone', OTHER_FAKE_CLERK_TOKEN);
+    const codeRes = await request(httpServer).post('/pairing/request-code').send({ deviceName: 'laptop' });
+
+    const claimed = await request(httpServer)
+      .post('/pairing/claim')
+      .set('Authorization', `Bearer ${victimToken}`)
+      .send({ code: codeRes.body.code });
+    expect(claimed.status).toBe(200);
+
+    const responses = [];
+    for (let i = 0; i < 5; i++) {
+      responses.push(
+        await request(httpServer)
+          .post('/pairing/claim')
+          .set('Authorization', `Bearer ${attackerToken}`)
+          .send({ code: codeRes.body.code })
+      );
+    }
+    const last = responses[responses.length - 1];
+    expect(last.status).toBe(410);
+    expect(last.body).toEqual({ error: 'Pairing code expired' });
   });
 
   it('returns 401 for POST /devices/register-browser without an Authorization header', async () => {

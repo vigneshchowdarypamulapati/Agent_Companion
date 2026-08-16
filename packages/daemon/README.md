@@ -79,12 +79,16 @@ human's account — it cannot mint its own credentials, because it has no way
 to prove whose machine it is:
 
 1. It calls the relay's `POST /pairing/request-code` (unauthenticated — at
-   this point the code belongs to nobody) and gets back a 6-digit `code`,
-   a private `deviceCode`, and an expiry 5 minutes out.
-2. It prints the `code` to the console for the human, who opens the
-   Companion web app — already signed in with Clerk — goes to **Settings →
-   Pair a daemon**, and enters it. That browser's `POST /pairing/claim`
-   links the pending code to the human's account.
+   this point the code belongs to nobody) and gets back an 8-character `code`
+   (Crockford base32, excluding the visually-ambiguous `I`/`L`/`O` and the
+   profanity-prone `U` — 40 bits), a private `deviceCode`, and an expiry 5
+   minutes out.
+2. It prints the `code` to the console, grouped as `XXXX-XXXX` for
+   typeability, for the human, who opens the Companion web app — already
+   signed in with Clerk — goes to **Settings → Pair a daemon**, and enters
+   it. Case doesn't matter and the hyphen is optional — that browser's
+   `POST /pairing/claim` normalizes before matching. It links the pending
+   code to the human's account.
 3. Meanwhile the daemon polls `POST /pairing/poll` with its private
    `deviceCode` every 2 seconds. Until the claim happens it gets
    `{ status: 'pending' }`; once it does, that poll mints and returns this

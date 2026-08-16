@@ -175,7 +175,8 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
       <form onSubmit={handleClaimPairingCode} className="border-t border-border pt-4 space-y-3">
         <h2 className="text-sm font-medium text-ink-secondary">Pair a daemon</h2>
         <p className="text-sm text-ink-muted">
-          Start the Companion daemon on your machine and enter the 6-digit code it prints.
+          Start the Companion daemon on your machine and enter the code it prints (case doesn't matter, and the
+          hyphen is optional).
         </p>
         <label htmlFor="pairing-code" className="block text-sm text-ink-muted">
           Pairing code
@@ -184,9 +185,10 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
           id="pairing-code"
           name="pairing-code"
           type="text"
-          inputMode="numeric"
+          inputMode="text"
           autoComplete="one-time-code"
-          maxLength={6}
+          autoCapitalize="characters"
+          maxLength={12}
           value={pairingCode}
           onChange={(e) => setPairingCode(e.target.value)}
           className="w-full rounded-md bg-panel px-3 py-2 tracking-widest"

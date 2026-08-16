@@ -21,6 +21,17 @@ export interface DeviceAuthOptions {
 const defaultFetch: FetchLike = (url, init) => fetch(url, init);
 
 /**
+ * Groups the relay's pairing code into `XXXX-XXXX` for typeability, e.g.
+ * `ABCD1234` -> `ABCD-1234`. Purely cosmetic: the relay's own matching
+ * (PairingService.claimPairingCode) already ignores hyphens/whitespace and
+ * is case-insensitive, so this grouping doesn't need to round-trip exactly
+ * — it just has to be easy for a human to read and type back correctly.
+ */
+function formatPairingCodeForDisplay(code: string): string {
+  return code.match(/.{1,4}/g)?.join('-') ?? code;
+}
+
+/**
  * Returns this daemon's device credentials, reading them from `tokenPath` if
  * present. On first run (no token file yet), requests a pairing code from
  * the relay, prints it for a human to enter in their already-authenticated
@@ -76,9 +87,9 @@ async function pairNewDevice(
     expiresAt: number;
   };
 
-  console.log(`Pairing code: ${code}`);
+  console.log(`Pairing code: ${formatPairingCodeForDisplay(code)}`);
   console.log('Open the Companion web app, go to Settings, and enter this code under "Pair a daemon"');
-  console.log('to link this daemon to your account.');
+  console.log('to link this daemon to your account. (Case doesn\'t matter, and the hyphen is optional.)');
 
   return pollForToken(base, deviceCode, expiresAt, fetchFn);
 }

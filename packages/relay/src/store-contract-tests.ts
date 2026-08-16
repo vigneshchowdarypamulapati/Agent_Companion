@@ -116,7 +116,34 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
 
     it('claimPairingCode returns not_found for an unknown code', async () => {
       const store = await makeStore();
-      expect(await store.claimPairingCode('000000', 'user-1')).toBe('not_found');
+      expect(await store.claimPairingCode('ZZZZZZZZ', 'user-1')).toBe('not_found');
+    });
+
+    it('createPairingCode generates an 8-character code from the pairing-code alphabet', async () => {
+      const store = await makeStore();
+      const pairing = await store.createPairingCode('my-laptop');
+      expect(pairing.code).toMatch(/^[0-9A-HJKMNP-TV-Z]{8}$/);
+      expect(pairing.failedAttempts).toBe(0);
+    });
+
+    it('invalidates a code after 5 failed claims, reporting expired rather than already_claimed', async () => {
+      const store = await makeStore();
+      const pairing = await store.createPairingCode('my-laptop');
+      expect(await store.claimPairingCode(pairing.code, 'user-1')).toBe('ok');
+
+      for (let i = 0; i < 4; i++) {
+        expect(await store.claimPairingCode(pairing.code, 'user-2')).toBe('already_claimed');
+      }
+      // The 5th failed re-claim attempt trips the lockout...
+      expect(await store.claimPairingCode(pairing.code, 'user-2')).toBe('expired');
+      // ...and it stays locked, not reverting to already_claimed.
+      expect(await store.claimPairingCode(pairing.code, 'user-2')).toBe('expired');
+    });
+
+    it('a code that never gets a single failed claim is unaffected by the lockout', async () => {
+      const store = await makeStore();
+      const pairing = await store.createPairingCode('my-laptop');
+      expect(await store.claimPairingCode(pairing.code, 'user-1')).toBe('ok');
     });
 
     it('claimPairingCode returns expired for an expired code', async () => {

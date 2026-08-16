@@ -1,7 +1,17 @@
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, gt, gte, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import type { PushSubscriptionPayload, SessionEvent, SessionStatus } from '@companion/protocol';
-import type { Device, DismissSessionResult, PairingCode, SessionRecord, Store, StoredSessionEvent, User } from './store.js';
+import {
+  generatePairingCode,
+  MAX_PAIRING_CODE_ATTEMPTS,
+  type Device,
+  type DismissSessionResult,
+  type PairingCode,
+  type SessionRecord,
+  type Store,
+  type StoredSessionEvent,
+  type User,
+} from './store.js';
 import type { Db } from './db/client.js';
 import { users, devices, pairingCodes, sessions, sessionEvents } from './db/schema.js';
 
@@ -75,7 +85,7 @@ export class PostgresStore implements Store {
     // Expired codes are never otherwise deleted; sweep them here so this
     // table doesn't grow forever now that storage is durable across restarts.
     await this.db.delete(pairingCodes).where(lt(pairingCodes.expiresAt, this.now()));
-    const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    const code = generatePairingCode();
     const deviceCode = randomUUID();
     const [pairing] = await this.db
       .insert(pairingCodes)
@@ -86,28 +96,56 @@ export class PostgresStore implements Store {
         deviceName,
         expiresAt: this.now() + PAIRING_CODE_TTL_MS,
         redeemed: false,
+        failedAttempts: 0,
       })
       .returning();
     return pairing;
   }
 
+  /**
+   * A single conditional UPDATE is the atomic success path — it only
+   * matches (and claims) a row that is unexpired, not yet claimed, and
+   * hasn't already hit the failed-attempt cap. The SELECT below only runs to
+   * classify *why* it didn't match, for a precise result; it never decides
+   * the outcome itself.
+   *
+   * A code that has racked up `MAX_PAIRING_CODE_ATTEMPTS` failed claims is
+   * reported exactly like an expired one — no separate status leaks that a
+   * lockout (rather than ordinary TTL expiry) is what happened, preserving
+   * the existing not_found/expired/already_claimed non-enumeration
+   * property. The only way to fail against a row that still exists,
+   * is unexpired, and is under the cap is for it to already be claimed by
+   * someone else — an unclaimed, unexpired, under-cap code always matches
+   * the UPDATE above — so that's the only case that increments the
+   * counter; this is what makes the cap durable against repeated re-claim
+   * attempts on an already-claimed code.
+   */
   async claimPairingCode(code: string, userId: string): Promise<'ok' | 'not_found' | 'expired' | 'already_claimed'> {
-    // A single conditional UPDATE is the atomic success path — it only
-    // matches (and claims) a row that is unexpired and not yet claimed.
-    // The SELECT below only runs to classify *why* it didn't match, for a
-    // precise result; it never decides the outcome itself.
     const [claimed] = await this.db
       .update(pairingCodes)
       .set({ userId })
       .where(
-        and(eq(pairingCodes.code, code), isNull(pairingCodes.userId), gte(pairingCodes.expiresAt, this.now()))
+        and(
+          eq(pairingCodes.code, code),
+          isNull(pairingCodes.userId),
+          gte(pairingCodes.expiresAt, this.now()),
+          lt(pairingCodes.failedAttempts, MAX_PAIRING_CODE_ATTEMPTS)
+        )
       )
       .returning();
     if (claimed) return 'ok';
 
     const [pairing] = await this.db.select().from(pairingCodes).where(eq(pairingCodes.code, code));
     if (!pairing) return 'not_found';
+    if (pairing.failedAttempts >= MAX_PAIRING_CODE_ATTEMPTS) return 'expired';
     if (pairing.expiresAt < this.now()) return 'expired';
+
+    const [updated] = await this.db
+      .update(pairingCodes)
+      .set({ failedAttempts: sql`${pairingCodes.failedAttempts} + 1` })
+      .where(eq(pairingCodes.code, code))
+      .returning();
+    if (updated && updated.failedAttempts >= MAX_PAIRING_CODE_ATTEMPTS) return 'expired';
     return 'already_claimed';
   }
 

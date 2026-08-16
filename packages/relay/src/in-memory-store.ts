@@ -1,13 +1,15 @@
-import { randomInt, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { PushSubscriptionPayload, SessionEvent, SessionStatus } from '@companion/protocol';
-import type {
-  Device,
-  DismissSessionResult,
-  PairingCode,
-  SessionRecord,
-  Store,
-  StoredSessionEvent,
-  User,
+import {
+  generatePairingCode,
+  MAX_PAIRING_CODE_ATTEMPTS,
+  type Device,
+  type DismissSessionResult,
+  type PairingCode,
+  type SessionRecord,
+  type Store,
+  type StoredSessionEvent,
+  type User,
 } from './store.js';
 
 const PAIRING_CODE_TTL_MS = 5 * 60 * 1000;
@@ -78,7 +80,7 @@ export class InMemoryStore implements Store {
   }
 
   async createPairingCode(deviceName: string): Promise<PairingCode> {
-    const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+    const code = generatePairingCode();
     const deviceCode = randomUUID();
     const pairing: PairingCode = {
       code,
@@ -87,17 +89,34 @@ export class InMemoryStore implements Store {
       deviceName,
       expiresAt: this.now() + PAIRING_CODE_TTL_MS,
       redeemed: false,
+      failedAttempts: 0,
     };
     this.pairingCodes.set(code, pairing);
     this.pairingCodesByDeviceCode.set(deviceCode, code);
     return pairing;
   }
 
+  /**
+   * A code that has racked up `MAX_PAIRING_CODE_ATTEMPTS` failed claims is
+   * treated exactly like an expired one — same external result, so nothing
+   * distinguishes "expired" from "locked out by too many failed claims" for
+   * a caller. Every failure against a code that still exists and hasn't
+   * already hit the cap counts toward it; a code that's already been
+   * claimed by someone else is the only way to fail against a
+   * still-live row (an unclaimed, unexpired, under-cap code always succeeds
+   * here), but recording that failure is still what makes the cap durable
+   * against repeated re-claim attempts.
+   */
   async claimPairingCode(code: string, userId: string): Promise<'ok' | 'not_found' | 'expired' | 'already_claimed'> {
     const pairing = this.pairingCodes.get(code);
     if (!pairing) return 'not_found';
+    if (pairing.failedAttempts >= MAX_PAIRING_CODE_ATTEMPTS) return 'expired';
     if (pairing.expiresAt < this.now()) return 'expired';
-    if (pairing.userId) return 'already_claimed';
+    if (pairing.userId) {
+      pairing.failedAttempts += 1;
+      if (pairing.failedAttempts >= MAX_PAIRING_CODE_ATTEMPTS) return 'expired';
+      return 'already_claimed';
+    }
     pairing.userId = userId;
     return 'ok';
   }

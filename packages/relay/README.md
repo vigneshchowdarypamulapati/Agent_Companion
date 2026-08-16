@@ -77,13 +77,16 @@ origin(s) or every browser request will be blocked by CORS.
 
 ## REST endpoints
 
-- `POST /pairing/request-code` `{ deviceName }` — a daemon requests a
-  6-digit, 5-minute, single-use pairing code, plus a private `deviceCode`
-  it uses to poll for completion. The code is not yet linked to any
-  account.
+- `POST /pairing/request-code` `{ deviceName }` — a daemon requests an
+  8-character, 5-minute, single-use pairing code (Crockford base32 minus
+  `I`/`L`/`O`/`U`, 40 bits of entropy), plus a private `deviceCode` it uses
+  to poll for completion. The code is not yet linked to any account.
 - `POST /pairing/claim` `{ code }` — an already-authenticated browser
-  device links a pending pairing code to its own account. `409` if that
-  account already has a paired daemon device.
+  device links a pending pairing code to its own account. The code is
+  matched case-insensitively with hyphens/whitespace stripped, so a human
+  can type it exactly as displayed (`XXXX-XXXX`), all lowercase, or as one
+  unbroken run of characters. `409` if that account already has a paired
+  daemon device.
 - `POST /pairing/poll` `{ deviceCode }` — the daemon that requested the
   code polls this until a browser claims it, then receives its device
   token. Always `200`, with `{ status: 'pending' | 'expired' }` or
@@ -148,8 +151,20 @@ The counters live in this process, like `PubSub` — see "Current scope" below.
   *account* (`device.userId`), not IP — this route runs post-authentication,
   so the account is already known, and it's strictly tighter than keying by
   device (an account can't buy more claim budget by registering extra
-  browser devices). A 6-digit code is otherwise brute-forceable inside its
-  own lifetime.
+  browser devices). This limiter is in-memory and resets on every
+  restart/redeploy, so it's not the durable defense — that's the persistent
+  per-code failed-attempt lockout described next.
+- **Persistent failed-claim lockout** (not one of the in-memory limiters
+  above): every `pairing_codes` row tracks its own `failedAttempts`. A claim
+  attempt that reaches an existing, unclaimed, unexpired code but doesn't
+  match — in practice, a code someone else already claimed — increments it;
+  5 failures invalidate the code, and `Store.claimPairingCode` then reports
+  `'expired'` for it exactly like a real TTL expiry (never a new status), so
+  a locked-out code is indistinguishable from an ordinary expired one to
+  every caller, including the daemon's own poll. Unlike the in-memory
+  limiters, this lives on the row in Postgres, so it survives process
+  restarts and redeploys — the actual bound on a sustained online guessing
+  attack.
 - `/devices/register-browser`: two layers. The real control is 10 per hour
   keyed by the *verified Clerk identity*, checked immediately after Clerk
   token verification succeeds and before any registration work happens —

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { Device, Store } from './store.js';
+import { MAX_PAIRING_CODE_ATTEMPTS, normalizePairingCode, type Device, type Store } from './store.js';
 
 function generateToken(): string {
   return randomBytes(32).toString('hex');
@@ -23,17 +23,35 @@ export class PairingService {
     return { code: pairing.code, deviceCode: pairing.deviceCode, expiresAt: pairing.expiresAt };
   }
 
-  /** Called by an already-paired browser to link a daemon's pending pairing code to its account. */
+  /**
+   * Called by an already-paired browser to link a daemon's pending pairing
+   * code to its account. The code is normalized (uppercased, hyphens/
+   * whitespace stripped) before matching, so a human can type it exactly as
+   * displayed (`XXXX-XXXX`), all lowercase, or as one unbroken run of
+   * characters — the store itself only ever sees/stores the canonical form.
+   */
   async claimPairingCode(code: string, userId: string): Promise<ClaimResult> {
     const existingDaemon = await this.store.getDaemonDeviceForUser(userId);
     if (existingDaemon) return 'daemon_exists';
-    return this.store.claimPairingCode(code, userId);
+    return this.store.claimPairingCode(normalizePairingCode(code), userId);
   }
 
   /** Called by the daemon that requested the code, until a browser claims it. */
   async pollPairingCode(deviceCode: string): Promise<PollResult> {
     const pairing = await this.store.getPairingCodeByDeviceCode(deviceCode);
-    if (!pairing || pairing.redeemed || pairing.expiresAt < Date.now()) {
+    // A code that's hit the failed-claim cap (MAX_PAIRING_CODE_ATTEMPTS) is
+    // reported 'expired' here too, exactly like true TTL expiry — no
+    // separate status leaks that a lockout (rather than ordinary expiry)
+    // happened. In practice this only ever fires for a code that was
+    // already claimed and then repeatedly re-claimed by someone else, but
+    // checking it unconditionally means a locked-out code can never be
+    // polled to completion no matter which path locked it.
+    if (
+      !pairing ||
+      pairing.redeemed ||
+      pairing.expiresAt < Date.now() ||
+      pairing.failedAttempts >= MAX_PAIRING_CODE_ATTEMPTS
+    ) {
       return { status: 'expired' };
     }
     if (!pairing.userId) {

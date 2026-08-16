@@ -48,7 +48,7 @@ describe('RequestPairingCodeRequest schema', () => {
 
 describe('ClaimPairingRequest schema', () => {
   it('accepts a valid request', () => {
-    expect(ClaimPairingRequest.safeParse({ code: '123456' }).success).toBe(true);
+    expect(ClaimPairingRequest.safeParse({ code: 'ABCD-1234' }).success).toBe(true);
   });
 
   it('rejects a missing code', () => {
