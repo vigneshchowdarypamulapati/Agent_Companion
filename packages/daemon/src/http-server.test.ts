@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import request, { type Test } from 'supertest';
+import type { AddressInfo } from 'node:net';
+import type { Server } from 'node:http';
+import type { Express } from 'express';
 import { SessionManager } from './session-manager.js';
 import { createHttpServer } from './http-server.js';
 import { AsyncQueue } from './async-queue.js';
@@ -17,6 +20,29 @@ const TOKEN = 'test-token-0123456789abcdef0123456789abcdef0123456789abcdef01';
 /** Attaches the bearer token every route requires. */
 function auth(req: Test): Test {
   return req.set('Authorization', `Bearer ${TOKEN}`);
+}
+
+/**
+ * Host-allowlist checks compare against the port the request actually
+ * arrived on (`req.socket.localPort`), so testing `localhost:<port>` or
+ * `[::1]:<port>` needs a real, known port rather than supertest's usual
+ * throwaway ephemeral binding per call. This binds the app to an
+ * OS-assigned port, hands the caller both the live `server` (so supertest
+ * targets that exact listener) and its `port` (to build a matching Host
+ * header), and always closes it afterward.
+ */
+async function withListeningServer(
+  app: Express,
+  fn: (server: Server, port: number) => Promise<void>
+): Promise<void> {
+  const server: Server = app.listen(0);
+  await new Promise<void>((resolve) => server.once('listening', resolve));
+  const port = (server.address() as AddressInfo).port;
+  try {
+    await fn(server, port);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 }
 
 function createMockAgent() {
@@ -170,6 +196,31 @@ describe('local HTTP surface auth', () => {
     expect(res.status).toBe(401);
   });
 
+  it('sends WWW-Authenticate: Bearer on a 401', async () => {
+    const { app } = setUp();
+
+    const res = await request(app).post('/sessions').send({ projectPath: '/tmp/project', prompt: 'x' });
+
+    expect(res.status).toBe(401);
+    expect(res.headers['www-authenticate']).toBe('Bearer');
+  });
+
+  it('accepts the Bearer scheme case-insensitively, per RFC 7235', async () => {
+    const { app } = setUp();
+
+    const lower = await request(app)
+      .post('/sessions')
+      .set('Authorization', `bearer ${TOKEN}`)
+      .send({ projectPath: '/tmp/project', prompt: 'x' });
+    expect(lower.status).toBe(201);
+
+    const upper = await request(app)
+      .post('/sessions/does-not-exist/pause')
+      .set('Authorization', `BEARER ${TOKEN}`);
+    // Any non-401/403 proves auth passed and the request reached the route.
+    expect(upper.status).toBe(400);
+  });
+
   it('returns 403 for a correct token but a spoofed Host header (DNS-rebinding shape)', async () => {
     const { manager, app } = setUp();
 
@@ -192,5 +243,93 @@ describe('local HTTP surface auth', () => {
     });
 
     expect(res.status).toBe(201);
+  });
+});
+
+describe('Host allowlist', () => {
+  // supertest's default request always uses "127.0.0.1:<ephemeral-port>",
+  // which the "succeeds with the correct token..." case above already
+  // covers. That leaves the other two allowed forms — and any near-miss —
+  // completely untested, which matters precisely because this is the layer
+  // that actually defeats DNS rebinding: a refactor to, say, parsed/regex
+  // Host matching could silently loosen it (e.g. accept "localhost.evil.com"
+  // as a prefix match) with every existing test still green.
+
+  it('allows "localhost:<port>"', async () => {
+    const { app } = setUp();
+    await withListeningServer(app, async (server, port) => {
+      const res = await request(server)
+        .post('/sessions')
+        .set('Authorization', `Bearer ${TOKEN}`)
+        .set('Host', `localhost:${port}`)
+        .send({ projectPath: '/tmp/project', prompt: 'x' });
+
+      expect(res.status).toBe(201);
+    });
+  });
+
+  it('allows "[::1]:<port>"', async () => {
+    const { app } = setUp();
+    await withListeningServer(app, async (server, port) => {
+      const res = await request(server)
+        .post('/sessions')
+        .set('Authorization', `Bearer ${TOKEN}`)
+        .set('Host', `[::1]:${port}`)
+        .send({ projectPath: '/tmp/project', prompt: 'x' });
+
+      expect(res.status).toBe(201);
+    });
+  });
+
+  it('rejects a case-different Host ("LOCALHOST:<port>")', async () => {
+    const { app } = setUp();
+    await withListeningServer(app, async (server, port) => {
+      const res = await request(server)
+        .post('/sessions')
+        .set('Authorization', `Bearer ${TOKEN}`)
+        .set('Host', `LOCALHOST:${port}`)
+        .send({ projectPath: '/tmp/project', prompt: 'x' });
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  it('rejects a Host with a trailing dot ("localhost.:<port>")', async () => {
+    const { app } = setUp();
+    await withListeningServer(app, async (server, port) => {
+      const res = await request(server)
+        .post('/sessions')
+        .set('Authorization', `Bearer ${TOKEN}`)
+        .set('Host', `localhost.:${port}`)
+        .send({ projectPath: '/tmp/project', prompt: 'x' });
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  it('rejects a Host with no port ("localhost")', async () => {
+    const { app } = setUp();
+    await withListeningServer(app, async (server) => {
+      const res = await request(server)
+        .post('/sessions')
+        .set('Authorization', `Bearer ${TOKEN}`)
+        .set('Host', 'localhost')
+        .send({ projectPath: '/tmp/project', prompt: 'x' });
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  it('rejects an attacker-controlled hostname even on the right port', async () => {
+    const { app } = setUp();
+    await withListeningServer(app, async (server, port) => {
+      const res = await request(server)
+        .post('/sessions')
+        .set('Authorization', `Bearer ${TOKEN}`)
+        .set('Host', `attacker.example.com:${port}`)
+        .send({ projectPath: '/tmp/project', prompt: 'x' });
+
+      expect(res.status).toBe(403);
+    });
   });
 });

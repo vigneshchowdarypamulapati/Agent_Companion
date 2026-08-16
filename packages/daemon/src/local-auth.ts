@@ -50,6 +50,24 @@ interface PersistedToken {
   token: string;
 }
 
+/** Matches exactly what generateToken() produces: 32 bytes, hex-encoded. */
+const TOKEN_SHAPE = /^[0-9a-f]{64}$/;
+
+function hasValidTokenShape(value: unknown): value is string {
+  return typeof value === 'string' && TOKEN_SHAPE.test(value);
+}
+
+/**
+ * Reads a previously persisted token, or undefined if there isn't a usable
+ * one yet. A corrupt file (invalid JSON) or a file with content that isn't
+ * shaped like a real token (wrong type, wrong length, wrong charset) is
+ * treated the same as "no token yet" rather than throwing: this is a
+ * locally-generated, locally-persisted secret with no external state tied
+ * to it, so silently regenerating is safe and strictly better than taking
+ * the whole daemon down over a damaged cache file on disk. The one thing
+ * it must not do is fail *silently* — a warning is logged so the damaged
+ * file doesn't go unnoticed.
+ */
 async function readExisting(tokenPath: string): Promise<string | undefined> {
   let raw: string;
   try {
@@ -58,11 +76,25 @@ async function readExisting(tokenPath: string): Promise<string | undefined> {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw err;
   }
-  const parsed = JSON.parse(raw) as Partial<PersistedToken>;
-  if (typeof parsed.token !== 'string') {
-    throw new Error(`Local HTTP token file at ${tokenPath} is malformed`);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.warn(
+      `Local HTTP token file at ${tokenPath} is corrupt (invalid JSON) — regenerating a new token.`
+    );
+    return undefined;
   }
-  return parsed.token;
+
+  const token = (parsed as Partial<PersistedToken> | null)?.token;
+  if (!hasValidTokenShape(token)) {
+    console.warn(
+      `Local HTTP token file at ${tokenPath} has an unexpected shape — regenerating a new token.`
+    );
+    return undefined;
+  }
+  return token;
 }
 
 async function persist(tokenPath: string, token: string): Promise<void> {

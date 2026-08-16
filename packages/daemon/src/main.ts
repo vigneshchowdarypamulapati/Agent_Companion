@@ -22,6 +22,63 @@ function relayHttpUrl(wsUrl: string): string {
   return wsUrl.replace(/^ws/, 'http');
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export const RELAY_CONNECT_INITIAL_BACKOFF_MS = 2000;
+export const RELAY_CONNECT_MAX_BACKOFF_MS = 30_000;
+
+export interface ConnectWithRetryOptions {
+  onError: (err: unknown, attempt: number) => void;
+  sleepFn?: (ms: number) => Promise<void>;
+  initialBackoffMs?: number;
+  maxBackoffMs?: number;
+}
+
+/**
+ * Retries `connectOnce` with capped exponential backoff until it succeeds,
+ * instead of giving up after the first failure.
+ *
+ * Before this existed, a single failure while first establishing the relay
+ * connection (relay unreachable at startup, or a pairing code expiring
+ * before a human claimed it) was caught once, logged, and main() simply
+ * returned. With the local HTTP surface now off by default, nothing was
+ * left holding the Node event loop open at that point, so the daemon
+ * exited 0 immediately — indistinguishable from a clean intentional
+ * shutdown to a process supervisor, on what is actually the production
+ * control channel failing to start. Retrying forever means there is
+ * always a pending timer (and, once connected, an open socket) keeping
+ * the process alive, and the relay connection self-heals once the relay
+ * becomes reachable again instead of requiring an external restart.
+ *
+ * Note this only covers the *first* connection attempt (device pairing +
+ * constructing the RelayClient) — once `connectOnce` succeeds, ongoing
+ * disconnects are already handled by RelayClient's own reconnect-with-
+ * backoff (relay-client.ts), so the two don't overlap or duplicate effort.
+ */
+export async function connectWithRetry(
+  connectOnce: () => Promise<void>,
+  options: ConnectWithRetryOptions
+): Promise<void> {
+  const sleepFn = options.sleepFn ?? sleep;
+  const initialBackoffMs = options.initialBackoffMs ?? RELAY_CONNECT_INITIAL_BACKOFF_MS;
+  const maxBackoffMs = options.maxBackoffMs ?? RELAY_CONNECT_MAX_BACKOFF_MS;
+  let backoffMs = initialBackoffMs;
+  let attempt = 0;
+  for (;;) {
+    attempt++;
+    try {
+      await connectOnce();
+      return;
+    } catch (err) {
+      options.onError(err, attempt);
+      await sleepFn(backoffMs);
+      backoffMs = Math.min(backoffMs * 2, maxBackoffMs);
+    }
+  }
+}
+
 /**
  * The local HTTP control surface is off unless explicitly opted into: it
  * exposes full tool-executing session control (POST /sessions et al.) on
@@ -63,43 +120,54 @@ async function main(): Promise<void> {
   }
 
   if (RELAY_URL) {
-    try {
-      const { token } = await getOrCreateDeviceToken({
-        relayHttpUrl: relayHttpUrl(RELAY_URL),
-        deviceName: DEVICE_NAME,
-        tokenPath: DEVICE_TOKEN_PATH,
-      });
+    // Fire-and-forget: connectWithRetry never rejects (it retries forever
+    // rather than throwing), so this never produces an unhandled rejection.
+    // main() itself returns without waiting for the relay to actually be up,
+    // same as before — the pending retry timer (or, once connected, the open
+    // socket) is what now keeps the process alive instead.
+    void connectWithRetry(
+      async () => {
+        const { token } = await getOrCreateDeviceToken({
+          relayHttpUrl: relayHttpUrl(RELAY_URL),
+          deviceName: DEVICE_NAME,
+          tokenPath: DEVICE_TOKEN_PATH,
+        });
 
-      relayClient = new RelayClient({
-        url: RELAY_URL,
-        token,
-        onLog: (message) => console.log(`[relay] ${message}`),
-        onCommand: (command) => {
-          void dispatchCommand(manager, command).catch((err) => {
-            const message = err instanceof Error ? err.message : String(err);
-            if (!('sessionId' in command)) {
-              console.error(`Relay command failed: ${message}`);
-              return;
-            }
-            const errorEvent: SessionEvent = {
-              type: 'command_failed',
-              sessionId: command.sessionId,
-              message,
-              at: Date.now(),
-            };
-            eventLog.push(errorEvent);
-            relayClient?.sendEvent(command.sessionId, errorEvent);
-          });
+        relayClient = new RelayClient({
+          url: RELAY_URL,
+          token,
+          onLog: (message) => console.log(`[relay] ${message}`),
+          onCommand: (command) => {
+            void dispatchCommand(manager, command).catch((err) => {
+              const message = err instanceof Error ? err.message : String(err);
+              if (!('sessionId' in command)) {
+                console.error(`Relay command failed: ${message}`);
+                return;
+              }
+              const errorEvent: SessionEvent = {
+                type: 'command_failed',
+                sessionId: command.sessionId,
+                message,
+                at: Date.now(),
+              };
+              eventLog.push(errorEvent);
+              relayClient?.sendEvent(command.sessionId, errorEvent);
+            });
+          },
+        });
+        relayClient.connect();
+        console.log(`Connecting to relay at ${RELAY_URL}`);
+      },
+      {
+        onError: (err, attempt) => {
+          console.error(
+            `Failed to connect to the relay (attempt ${attempt}, retrying): ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
         },
-      });
-      relayClient.connect();
-      console.log(`Connecting to relay at ${RELAY_URL}`);
-    } catch (err) {
-      const suffix = HTTP_ENABLED ? ' (local HTTP control surface remains available)' : '';
-      console.error(
-        `Failed to connect to the relay${suffix}: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
+      }
+    );
   }
 }
 

@@ -47,12 +47,16 @@ function hostAllowlist() {
   };
 }
 
+// RFC 7235: the auth-scheme token ("Bearer") is case-insensitive.
+const BEARER_HEADER = /^bearer\s+(.+)$/i;
+
 /** Rejects any request that doesn't present the correct `Authorization: Bearer <token>` header. */
 function bearerAuth(token: string) {
   return (req: Request, res: Response, next: NextFunction) => {
     const header = req.headers.authorization;
-    const presented = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
+    const presented = header?.match(BEARER_HEADER)?.[1];
     if (!presented || !tokensMatch(presented, token)) {
+      res.setHeader('WWW-Authenticate', 'Bearer');
       res.status(401).end();
       return;
     }
