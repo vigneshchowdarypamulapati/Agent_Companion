@@ -46,5 +46,7 @@ function describeEvent(event: SessionEvent): string {
       return `Command failed: ${event.message}`;
     case 'stopped':
       return 'Session stopped';
+    case 'events_dropped':
+      return 'Some activity was lost while disconnected from the relay';
   }
 }

@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
 import { RelayToDaemonMessage, type Command, type DaemonToRelayMessage, type SessionEvent } from '@companion/protocol';
+import { OutboundBuffer, type BufferedEvent } from './outbound-buffer.js';
 
 export interface RelayClientOptions {
   url: string;
@@ -14,6 +15,9 @@ export interface RelayClientOptions {
    * reconnect backoff is reset. Defaults to 3000ms.
    */
   openConfirmMs?: number;
+  /** Overrides for the outbound buffer's bounds — see outbound-buffer.ts for defaults/rationale. */
+  maxBufferedEvents?: number;
+  maxBufferedBytes?: number;
 }
 
 /**
@@ -36,14 +40,19 @@ export class RelayClient {
   private reconnectTimer: NodeJS.Timeout | undefined;
   private openConfirmTimer: NodeJS.Timeout | undefined;
   /**
-   * Daemon-assigned delivery sequence, incremented per event sent. This is distinct from the
-   * relay's store-assigned `seq` (which only the relay can assign, once it durably persists the
-   * event) — it exists so the relay can eventually ack "highest contiguous deliverySeq stored"
-   * and the daemon can redeliver from there. Redelivery/buffering itself is a later task; today
-   * this counter just replaces the previous meaningless `seq: 0` placeholder with a real,
-   * monotonically increasing value.
+   * Daemon-assigned delivery sequence, incremented per event handed to sendEvent (including
+   * synthesized events_dropped markers — see sendEvent). Distinct from the relay's store-assigned
+   * `seq` (which only the relay can assign, once it durably persists the event): this is what the
+   * relay's `event_ack` reports back as "highest contiguous deliverySeq stored", and what `buffer`
+   * uses to know which buffered entries are still unacknowledged and must be replayed.
    */
   private deliverySeq = 0;
+  /**
+   * Holds every sent-but-not-yet-acknowledged event so a disconnect never destroys one — see
+   * outbound-buffer.ts for the full rationale and bounds. Replayed in full, in order, on every
+   * reconnect (openSocket's 'open' handler) before any newly-generated event is sent.
+   */
+  private readonly buffer: OutboundBuffer;
 
   constructor(options: RelayClientOptions) {
     this.url = options.url;
@@ -55,6 +64,10 @@ export class RelayClient {
     this.maxBackoffMs = options.maxBackoffMs ?? 10_000;
     this.openConfirmMs = options.openConfirmMs ?? 3000;
     this.backoffMs = this.initialBackoffMs;
+    this.buffer = new OutboundBuffer({
+      maxEntries: options.maxBufferedEvents,
+      maxBytes: options.maxBufferedBytes,
+    });
   }
 
   connect(): void {
@@ -69,13 +82,37 @@ export class RelayClient {
     this.ws?.close();
   }
 
+  /**
+   * Never silently drops. While disconnected, the event is buffered and replayed on the next
+   * reconnect instead of destroyed — see the class-level `buffer` doc and outbound-buffer.ts.
+   * If `sessionId` had earlier events evicted from the buffer (overflow), an `events_dropped`
+   * marker for it is buffered/sent first, so a consumer never mistakes a gap for a complete
+   * history.
+   */
   sendEvent(sessionId: string, event: SessionEvent): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.onLog(`Dropping event ${event.type} for session ${sessionId}: not connected to relay`);
-      return;
+    if (this.buffer.consumePendingDrop(sessionId)) {
+      this.bufferAndTransmit(sessionId, { type: 'events_dropped', sessionId, at: Date.now() });
     }
+    this.bufferAndTransmit(sessionId, event);
+  }
+
+  private bufferAndTransmit(sessionId: string, event: SessionEvent): void {
     this.deliverySeq += 1;
-    const message: DaemonToRelayMessage = { kind: 'event', sessionId, deliverySeq: this.deliverySeq, event };
+    const entry: BufferedEvent = { deliverySeq: this.deliverySeq, sessionId, event };
+    this.buffer.push(entry);
+    this.transmit(entry);
+  }
+
+  /** Sends one entry if (and only if) the socket is currently open; otherwise a no-op — the
+   * entry stays in `buffer` and goes out on the next replay. */
+  private transmit(entry: BufferedEvent): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const message: DaemonToRelayMessage = {
+      kind: 'event',
+      sessionId: entry.sessionId,
+      deliverySeq: entry.deliverySeq,
+      event: entry.event,
+    };
     this.ws.send(JSON.stringify(message));
   }
 
@@ -105,6 +142,12 @@ export class RelayClient {
 
     ws.on('open', () => {
       this.onLog('Connected to relay');
+      // Replay every unacknowledged event before anything newly-generated goes out, so the relay
+      // never sees events for a session out of order (e.g. a later event arriving before the
+      // session_started that a disconnect had buffered).
+      for (const entry of this.buffer.all()) {
+        this.transmit(entry);
+      }
       this.onOpenCallback();
       // The relay accepts the WS upgrade (firing this 'open' event) before it has
       // asynchronously verified the token and can still reject with close code 4401.
@@ -125,9 +168,12 @@ export class RelayClient {
       }
       if (parsed.kind === 'command') {
         this.onCommand(parsed.command);
+      } else if (parsed.kind === 'event_ack') {
+        // The relay does not send this yet (that's a later task), but handling it now means
+        // nothing else has to change once it does: any acked entries stop being replayed.
+        this.buffer.acknowledge(parsed.deliverySeq);
       }
-      // 'event_ack' and 'rpc_request' are not yet handled — buffering/redelivery and RPC
-      // dispatch are later tasks (see the deliverySeq comment above and the brief).
+      // 'rpc_request' is not yet handled — RPC dispatch is a later task.
     });
 
     ws.on('close', () => {

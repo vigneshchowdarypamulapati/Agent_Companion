@@ -42,6 +42,9 @@ const STATUS_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], SessionStatus>>
   turn_complete: 'waiting_input',
   stopped: 'stopped',
   error: 'stopped',
+  // events_dropped: deliberately absent. It reports a gap in the delivered history (events the
+  // daemon's outbound buffer had to evict), not a change in what the session is actually doing —
+  // the session's real status is whatever the next real event says it is.
 };
 
 /**
@@ -55,6 +58,8 @@ const NOTIFICATION_TITLE_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], str
   turn_complete: 'Claude is waiting for you',
   error: 'Session error',
   stopped: 'Session stopped',
+  // events_dropped: deliberately absent — it's a bookkeeping marker about missing history, not
+  // something happening in the session worth waking someone's phone up for.
 };
 
 const CHANNEL = 'relay:message';

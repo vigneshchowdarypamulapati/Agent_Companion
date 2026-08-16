@@ -73,5 +73,15 @@ export const SessionEvent = z.discriminatedUnion('type', [
     sessionId: z.string(),
     at: z.number(),
   }),
+  z.object({
+    // Emitted by the daemon's RelayClient (see packages/daemon/src/outbound-buffer.ts) when its
+    // outbound buffer had to evict unacknowledged events for this session — e.g. a long relay
+    // outage while the session kept streaming. It marks a gap in the history a consumer is about
+    // to see, so downstream can say "some activity is missing" instead of silently presenting an
+    // incomplete run as a complete one.
+    type: z.literal('events_dropped'),
+    sessionId: z.string(),
+    at: z.number(),
+  }),
 ]);
 export type SessionEvent = z.infer<typeof SessionEvent>;

@@ -25,6 +25,9 @@ const STATUS_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], SessionStatus>>
   turn_complete: 'waiting_input',
   stopped: 'stopped',
   error: 'stopped',
+  // events_dropped: deliberately absent. It reports a gap in the delivered history (events the
+  // daemon's outbound buffer had to evict), not a change in what the session is actually doing —
+  // the session's real status is whatever the next real event says it is.
 };
 
 export interface UseSessionsStoreResult {

@@ -25,6 +25,27 @@ function waitForConnection(wss: WebSocketServer): Promise<WebSocket> {
   });
 }
 
+/**
+ * A FIFO queue of parsed messages, for tests that expect several messages in a row (e.g. a
+ * replay). Unlike chaining `waitForMessage` calls — which each register a fresh `once` listener
+ * only after the previous one resolves — this attaches a single permanent listener up front, so
+ * messages that arrive back-to-back in the same synchronous burst (as a replay's sends do) are
+ * queued rather than lost while a consumer hasn't called next() yet.
+ */
+function collectMessages(ws: WebSocket): { next: () => Promise<any> } {
+  const queue: any[] = [];
+  const waiters: Array<(value: any) => void> = [];
+  ws.on('message', (data) => {
+    const parsed = JSON.parse(data.toString());
+    const waiter = waiters.shift();
+    if (waiter) waiter(parsed);
+    else queue.push(parsed);
+  });
+  return {
+    next: () => (queue.length > 0 ? Promise.resolve(queue.shift()) : new Promise((resolve) => waiters.push(resolve))),
+  };
+}
+
 describe('RelayClient', () => {
   let wss: WebSocketServer;
   let client: RelayClient | undefined;
@@ -229,6 +250,107 @@ describe('RelayClient', () => {
     // Reset means the next attempt waits ~50ms. Without the reset it would have
     // waited the grown backoff of ~200ms.
     expect(gapAfterStableConnection).toBeLessThan(150);
+  });
+
+  it('buffers events sent while disconnected and replays them in order on reconnect — including a session_started that must not be lost', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    client = new RelayClient({ url: `ws://127.0.0.1:${fake.port}`, token: 't', onCommand: () => {} });
+    // Note: connect() deliberately not called — sendEvent must buffer, not drop, while there is
+    // no socket at all yet. This is the exact regression: if session_started is lost here, the
+    // relay later rejects every event for this session because it never learns the session exists.
+    const started: SessionEvent = { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/p', at: 1 };
+    const followUp: SessionEvent = { type: 'turn_complete', sessionId: 'sess-1', at: 2 };
+    client.sendEvent('sess-1', started);
+    client.sendEvent('sess-1', followUp);
+
+    const serverConnected = waitForConnection(wss);
+    client.connect();
+    const serverSocket = await serverConnected;
+    const messages = collectMessages(serverSocket);
+
+    const first = await messages.next();
+    const second = await messages.next();
+    expect(first).toMatchObject({ kind: 'event', deliverySeq: 1, event: started });
+    expect(second).toMatchObject({ kind: 'event', deliverySeq: 2, event: followUp });
+  });
+
+  it('does not replay entries the relay has already acknowledged', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    const firstConnection = waitForConnection(wss);
+    client = new RelayClient({
+      url: `ws://127.0.0.1:${fake.port}`,
+      token: 't',
+      onCommand: () => {},
+      // Long enough that the reconnect (after we deliberately close below) cannot fire before
+      // the disconnected sendEvent() call further down has definitely run and buffered.
+      initialBackoffMs: 300,
+      maxBackoffMs: 300,
+    });
+    client.connect();
+    const firstSocket = await firstConnection;
+
+    const acked = waitForMessage(firstSocket);
+    client.sendEvent('sess-1', { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/p', at: 1 });
+    expect((await acked).deliverySeq).toBe(1);
+
+    firstSocket.send(JSON.stringify({ kind: 'event_ack', deliverySeq: 1 }));
+
+    firstSocket.close();
+    // Give the client time to process the ack and observe the close (readyState settle to
+    // non-OPEN) before sending the next event, so that send deterministically buffers instead of
+    // racing the close handshake. initialBackoffMs (300ms) keeps the automatic reconnect from
+    // firing before this wait — and the sendEvent below — complete.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const secondConnection = waitForConnection(wss);
+    client.sendEvent('sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 2 });
+    const secondSocket = await secondConnection;
+
+    // Only the unacked deliverySeq 2 should be replayed — not the already-acked deliverySeq 1.
+    const replayed = await waitForMessage(secondSocket);
+    expect(replayed.deliverySeq).toBe(2);
+  });
+
+  it('prepends an events_dropped marker before the next new send for a session that lost buffered entries', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    client = new RelayClient({
+      url: `ws://127.0.0.1:${fake.port}`,
+      token: 't',
+      onCommand: () => {},
+      maxBufferedEvents: 1,
+    });
+    // Still not connected: both sends buffer. The buffer only holds 1 entry, so the first
+    // (session_started) is evicted to make room for the second, marking sess-1 for a drop marker.
+    client.sendEvent('sess-1', { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/p', at: 1 });
+    client.sendEvent('sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 2 });
+
+    const serverConnected = waitForConnection(wss);
+    client.connect();
+    const serverSocket = await serverConnected;
+    const messages = collectMessages(serverSocket);
+
+    // Replay first delivers whatever survived eviction (deliverySeq 2). Markers are only ever
+    // inserted ahead of a newly-generated send (see sendEvent) — never retroactively spliced into
+    // a replay — because a replayed entry already carries the deliverySeq it was originally
+    // assigned, and a marker manufactured "after the fact" during replay would have to carry a
+    // *higher* deliverySeq than entries still queued behind it, breaking the numeric order the
+    // relay's future ack/contiguous-seq tracking depends on.
+    const replayed = await messages.next();
+    expect(replayed.event).toMatchObject({ type: 'turn_complete', sessionId: 'sess-1' });
+
+    client.sendEvent('sess-1', { type: 'turn_complete', sessionId: 'sess-1', at: 3 });
+
+    const marker = await messages.next();
+    const realEvent = await messages.next();
+    expect(marker.event).toMatchObject({ type: 'events_dropped', sessionId: 'sess-1' });
+    expect(realEvent.event).toMatchObject({ type: 'turn_complete', sessionId: 'sess-1', at: 3 });
+    expect(marker.deliverySeq).toBeLessThan(realEvent.deliverySeq);
   });
 
   it('does not leak the token into a log line when the relay URL is malformed', async () => {

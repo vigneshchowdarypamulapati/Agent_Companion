@@ -21,6 +21,7 @@ describe('ActivityFeed', () => {
       { type: 'error', sessionId: 's', message: 'boom', at: 1 },
       { type: 'command_failed', sessionId: 's', message: 'nope', at: 1 },
       { type: 'stopped', sessionId: 's', at: 1 },
+      { type: 'events_dropped', sessionId: 's', at: 1 },
     ];
     render(<ActivityFeed events={events} />);
 
@@ -34,5 +35,6 @@ describe('ActivityFeed', () => {
     expect(screen.getByText('Error: boom')).toBeInTheDocument();
     expect(screen.getByText('Command failed: nope')).toBeInTheDocument();
     expect(screen.getByText('Session stopped')).toBeInTheDocument();
+    expect(screen.getByText('Some activity was lost while disconnected from the relay')).toBeInTheDocument();
   });
 });
