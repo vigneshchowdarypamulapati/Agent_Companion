@@ -671,8 +671,8 @@ describe('ConnectionHub', () => {
 
   // --- push notifications ---
 
-  const subscriptionA = { endpoint: 'https://push.example.com/a', keys: { p256dh: 'p-a', auth: 'a-a' } };
-  const subscriptionB = { endpoint: 'https://push.example.com/b', keys: { p256dh: 'p-b', auth: 'a-b' } };
+  const subscriptionA = { endpoint: 'https://fcm.googleapis.com/fcm/send/a', keys: { p256dh: 'p-a', auth: 'a-a' } };
+  const subscriptionB = { endpoint: 'https://fcm.googleapis.com/fcm/send/b', keys: { p256dh: 'p-b', auth: 'a-b' } };
 
   it('sends a push notification to a subscribed browser device on a permission_request event', async () => {
     const store = new InMemoryStore();

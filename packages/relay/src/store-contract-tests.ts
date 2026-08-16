@@ -57,7 +57,7 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
         name: 'phone',
         tokenHash: 'hash-3',
       });
-      const subscription = { endpoint: 'https://push.example.com/abc', keys: { p256dh: 'p', auth: 'a' } };
+      const subscription = { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', keys: { p256dh: 'p', auth: 'a' } };
 
       await store.setPushSubscription(device.id, subscription);
 
@@ -75,7 +75,7 @@ export function runStoreContractTests(label: string, makeStore: (now?: () => num
         tokenHash: 'hash-4',
       });
       await store.setPushSubscription(device.id, {
-        endpoint: 'https://push.example.com/abc',
+        endpoint: 'https://fcm.googleapis.com/fcm/send/abc',
         keys: { p256dh: 'p', auth: 'a' },
       });
 

@@ -9,7 +9,7 @@ vi.mock('web-push', () => ({
   },
 }));
 
-const subscription = { endpoint: 'https://push.example.com/abc', keys: { p256dh: 'p', auth: 'a' } };
+const subscription = { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', keys: { p256dh: 'p', auth: 'a' } };
 const options = { vapidPublicKey: 'pub', vapidPrivateKey: 'priv', vapidSubject: 'mailto:you@example.com' };
 
 describe('WebPushSender', () => {

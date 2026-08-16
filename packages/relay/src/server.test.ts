@@ -1192,7 +1192,7 @@ describe('relay server', () => {
 
     const res = await request(httpServer)
       .post('/devices/push-subscription')
-      .send({ endpoint: 'https://push.example.com/x', keys: { p256dh: 'p', auth: 'a' } });
+      .send({ endpoint: 'https://fcm.googleapis.com/fcm/send/x', keys: { p256dh: 'p', auth: 'a' } });
     expect(res.status).toBe(401);
   });
 
@@ -1208,7 +1208,7 @@ describe('relay server', () => {
     const res = await request(httpServer)
       .post('/devices/push-subscription')
       .set('Authorization', `Bearer ${token}`)
-      .send({ endpoint: 'https://push.example.com/x' });
+      .send({ endpoint: 'https://fcm.googleapis.com/fcm/send/x' });
     expect(res.status).toBe(400);
   });
 
@@ -1236,7 +1236,7 @@ describe('relay server', () => {
     const subscribeRes = await request(httpServer)
       .post('/devices/push-subscription')
       .set('Authorization', `Bearer ${browserToken}`)
-      .send({ endpoint: 'https://push.example.com/x', keys: { p256dh: 'p', auth: 'a' } });
+      .send({ endpoint: 'https://fcm.googleapis.com/fcm/send/x', keys: { p256dh: 'p', auth: 'a' } });
     expect(subscribeRes.status).toBe(200);
 
     const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
@@ -1278,7 +1278,7 @@ describe('relay server', () => {
     await request(httpServer)
       .post('/devices/push-subscription')
       .set('Authorization', `Bearer ${token}`)
-      .send({ endpoint: 'https://push.example.com/x', keys: { p256dh: 'p', auth: 'a' } });
+      .send({ endpoint: 'https://fcm.googleapis.com/fcm/send/x', keys: { p256dh: 'p', auth: 'a' } });
 
     const deleteRes = await request(httpServer)
       .delete('/devices/push-subscription')

@@ -25,12 +25,12 @@ describe('push API', () => {
   it('savePushSubscription resolves on 200', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) })));
     await expect(
-      savePushSubscription('tok-1', { endpoint: 'https://push.example.com/x', keys: { p256dh: 'p', auth: 'a' } })
+      savePushSubscription('tok-1', { endpoint: 'https://fcm.googleapis.com/fcm/send/x', keys: { p256dh: 'p', auth: 'a' } })
     ).resolves.toBeUndefined();
   });
 
   it('savePushSubscription sends the subscription as the request body', async () => {
-    const subscription = { endpoint: 'https://push.example.com/x', keys: { p256dh: 'p', auth: 'a' } };
+    const subscription = { endpoint: 'https://fcm.googleapis.com/fcm/send/x', keys: { p256dh: 'p', auth: 'a' } };
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       expect(JSON.parse(init?.body as string)).toEqual(subscription);
       return { ok: true, status: 200, json: async () => ({ ok: true }) };

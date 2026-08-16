@@ -123,6 +123,20 @@ origin(s) or every browser request will be blocked by CORS.
 - `POST /devices/push-subscription` `{ endpoint, keys: { p256dh, auth } }`
   — stores a Web Push subscription against the calling device.
   `200 { ok: true }` on success, `400` on an invalid subscription body.
+  `endpoint` must be an `https://` URL whose host is a recognized browser
+  push service (Chrome/Edge's `fcm.googleapis.com`, Firefox's
+  `updates.push.services.mozilla.com`/`push.services.mozilla.com`,
+  `notify.windows.com`, or Safari's `web.push.apple.com`, plus subdomains
+  of any of those) — anything else is rejected, since a stored endpoint the
+  relay will later POST to on every qualifying session event is otherwise a
+  replayable, authenticated blind-SSRF primitive with built-in request
+  amplification. IP-literal hosts (IPv4 or bracketed IPv6) are always
+  rejected outright. To allow another provider without a code change, set
+  `COMPANION_RELAY_PUSH_ENDPOINT_ALLOWLIST` to a comma-separated list of
+  bare hostnames (no scheme/path/port/IP literals) — the relay fails fast
+  at startup if it's set but malformed. See `packages/protocol/src/push.ts`
+  for the exact matching rule (exact host or a proper `.`-prefixed
+  subdomain — never a bare substring match).
 - `DELETE /devices/push-subscription` — clears the calling device's
   subscription. `200 { ok: true }` on success (idempotent — succeeds even
   if there was no subscription to clear).

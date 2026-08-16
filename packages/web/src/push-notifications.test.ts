@@ -75,7 +75,7 @@ describe('push-notifications', () => {
       vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('aGk');
       const savePushSubscription = vi.spyOn(pushApi, 'savePushSubscription').mockResolvedValue(undefined);
       const subscribe = vi.fn(async () => ({
-        toJSON: () => ({ endpoint: 'https://push.example.com/x', keys: { p256dh: 'p', auth: 'a' } }),
+        toJSON: () => ({ endpoint: 'https://fcm.googleapis.com/fcm/send/x', keys: { p256dh: 'p', auth: 'a' } }),
       }));
       const env = fakeEnvironment({
         getRegistration: async () => ({ pushManager: { subscribe } }) as any,
@@ -87,7 +87,7 @@ describe('push-notifications', () => {
         expect.objectContaining({ userVisibleOnly: true, applicationServerKey: expect.any(Uint8Array) })
       );
       expect(savePushSubscription).toHaveBeenCalledWith('tok-1', {
-        endpoint: 'https://push.example.com/x',
+        endpoint: 'https://fcm.googleapis.com/fcm/send/x',
         keys: { p256dh: 'p', auth: 'a' },
       });
     });
