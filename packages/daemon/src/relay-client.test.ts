@@ -117,20 +117,53 @@ describe('RelayClient', () => {
     wss = fake.wss;
     const connected = waitForConnection(wss);
 
-    const commandReceived = new Promise<Command>((resolve) => {
+    const commandReceived = new Promise<{ commandId: string; command: Command }>((resolve) => {
       client = new RelayClient({
         url: `ws://127.0.0.1:${fake.port}`,
         token: 'test-token',
-        onCommand: (command) => resolve(command),
+        onCommand: (commandId, command) => resolve({ commandId, command }),
       });
     });
     client!.connect();
 
     const serverSocket = await connected;
     const command: Command = { type: 'pause', sessionId: 'sess-1' };
-    serverSocket.send(JSON.stringify({ kind: 'command', sessionId: 'sess-1', command }));
+    serverSocket.send(JSON.stringify({ kind: 'command', sessionId: 'sess-1', commandId: 'cmd-1', command }));
 
-    expect(await commandReceived).toEqual(command);
+    expect(await commandReceived).toEqual({ commandId: 'cmd-1', command });
+  });
+
+  it('sends a command_ack frame when sendCommandAck is called while connected', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const connected = waitForConnection(wss);
+
+    const clientOpened = new Promise<void>((resolve) => {
+      client = new RelayClient({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 'test-token',
+        onCommand: () => {},
+        onOpen: () => resolve(),
+      });
+    });
+    client!.connect();
+    const [serverSocket] = await Promise.all([connected, clientOpened]);
+
+    const received = waitForMessage(serverSocket);
+    client!.sendCommandAck('cmd-1', 'delivered');
+    expect(await received).toEqual({ kind: 'command_ack', commandId: 'cmd-1', status: 'delivered' });
+
+    const received2 = waitForMessage(serverSocket);
+    client!.sendCommandAck('cmd-2', 'failed', 'Unknown session');
+    expect(await received2).toEqual({ kind: 'command_ack', commandId: 'cmd-2', status: 'failed', message: 'Unknown session' });
+  });
+
+  it('does not throw and does not send when sendCommandAck is called while disconnected', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    client = new RelayClient({ url: `ws://127.0.0.1:${fake.port}`, token: 't', onCommand: () => {} });
+    // Note: connect() deliberately not called — there is no socket yet.
+    expect(() => client!.sendCommandAck('cmd-1', 'delivered')).not.toThrow();
   });
 
   it('does not throw when sendEvent is called before the socket is open', async () => {

@@ -90,13 +90,23 @@ describe('RelayToDaemonMessage schema', () => {
     expect(result.success).toBe(true);
   });
 
-  it('accepts a valid command envelope', () => {
+  it('accepts a valid command envelope with a commandId', () => {
+    const result = RelayToDaemonMessage.safeParse({
+      kind: 'command',
+      sessionId: 'sess-1',
+      commandId: 'cmd-1',
+      command: { type: 'pause', sessionId: 'sess-1' },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a command envelope missing commandId', () => {
     const result = RelayToDaemonMessage.safeParse({
       kind: 'command',
       sessionId: 'sess-1',
       command: { type: 'pause', sessionId: 'sess-1' },
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it('accepts a valid rpc_request', () => {

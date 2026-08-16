@@ -7,7 +7,7 @@ import { realQueryFn } from './real-agent-sdk.js';
 import { getOrCreateDeviceToken } from './device-auth.js';
 import { getOrCreateLocalToken } from './local-auth.js';
 import { RelayClient } from './relay-client.js';
-import { dispatchCommand } from './command-dispatcher.js';
+import { dispatchCommandWithAck } from './command-dispatcher.js';
 import type { SessionEvent } from '@companion/protocol';
 
 const PORT = Number(process.env.COMPANION_DAEMON_PORT ?? 4310);
@@ -166,17 +166,24 @@ export async function main(): Promise<void> {
           url: RELAY_URL,
           token,
           onLog: (message) => console.log(`[relay] ${message}`),
-          onCommand: (command) => {
-            void dispatchCommand(manager, command).catch((err) => {
-              const message = err instanceof Error ? err.message : String(err);
+          // `commandId` here is purely a delivery-tracking handle for the command_ack — it has
+          // no bearing on *what* the command does, so dispatchCommandWithAck's own dispatch call
+          // never sees it. See dispatchCommandWithAck's doc comment (command-dispatcher.ts) for
+          // why the ack it sends and the command_failed event raised below are two distinct,
+          // deliberately-not-collapsed signals.
+          onCommand: (commandId, command) => {
+            void dispatchCommandWithAck(manager, command, (status, message) =>
+              relayClient?.sendCommandAck(commandId, status, message)
+            ).then((result) => {
+              if (result.ok) return;
               if (!('sessionId' in command)) {
-                console.error(`Relay command failed: ${message}`);
+                console.error(`Relay command failed: ${result.message}`);
                 return;
               }
               const errorEvent: SessionEvent = {
                 type: 'command_failed',
                 sessionId: command.sessionId,
-                message,
+                message: result.message,
                 at: Date.now(),
               };
               eventLog.push(errorEvent);

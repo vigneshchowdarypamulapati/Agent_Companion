@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Command, SessionEvent } from '@companion/protocol';
-import { RelayConnection, type RelayConnectionOptions } from './relay-connection';
+import { RelayConnection, type CommandAckResult, type RelayConnectionOptions } from './relay-connection';
 
 export interface LiveEvent {
   sessionId: string;
   seq: number;
   event: SessionEvent;
 }
+
+export type { CommandAckResult };
 
 export interface UseRelayConnectionOptions {
   url: string;
@@ -36,7 +38,15 @@ export interface UseRelayConnectionOptions {
 
 export interface UseRelayConnectionResult {
   connected: boolean;
-  sendCommand: (sessionId: string, command: Command) => void;
+  /**
+   * Resolves once the command's outcome is known — a real ack, a client-side timeout, or the
+   * connection being torn down while the command was still pending (see RelayConnection's
+   * `sendCommand` doc comment for the full lifecycle). Never rejects: 'failed' is a resolved
+   * value, not a thrown error, so callers (e.g. PromptInjectionBox) can await it without a
+   * try/catch. The promise always settles — `sendCommand`'s underlying RelayConnection
+   * guarantees exactly one onCommandAck call per commandId no matter how it resolves.
+   */
+  sendCommand: (sessionId: string, command: Command) => Promise<CommandAckResult>;
 }
 
 export function useRelayConnection(options: UseRelayConnectionOptions): UseRelayConnectionResult {
@@ -56,6 +66,9 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
   onLogRef.current = onLog;
   const onUnauthorizedRef = useRef(onUnauthorized);
   onUnauthorizedRef.current = onUnauthorized;
+  /** Resolvers for sendCommand's promise, keyed by commandId — settled from the
+   * onCommandAck callback wired into the connection below. */
+  const pendingAcksRef = useRef<Map<string, (result: CommandAckResult) => void>>(new Map());
 
   useEffect(() => {
     const connection = createConnection({
@@ -66,6 +79,12 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
       onClose: () => setConnected(false),
       onLog: (message) => onLogRef.current?.(message),
       onUnauthorized: () => onUnauthorizedRef.current?.(),
+      onCommandAck: (commandId, result) => {
+        const resolve = pendingAcksRef.current.get(commandId);
+        if (!resolve) return;
+        pendingAcksRef.current.delete(commandId);
+        resolve(result);
+      },
     });
     connectionRef.current = connection;
     connection.connect();
@@ -76,8 +95,18 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
     };
   }, [url, token]);
 
-  const sendCommand = useCallback((sessionId: string, command: Command) => {
-    connectionRef.current?.sendCommand(sessionId, command);
+  const sendCommand = useCallback((sessionId: string, command: Command): Promise<CommandAckResult> => {
+    return new Promise((resolve) => {
+      const connection = connectionRef.current;
+      if (!connection) {
+        // No connection object exists at all (called before mount or after unmount) — nothing
+        // will ever call back, so resolve failed immediately rather than hanging forever.
+        resolve({ status: 'failed', message: 'Not connected to the relay' });
+        return;
+      }
+      const commandId = connection.sendCommand(sessionId, command);
+      pendingAcksRef.current.set(commandId, resolve);
+    });
   }, []);
 
   return { connected, sendCommand };

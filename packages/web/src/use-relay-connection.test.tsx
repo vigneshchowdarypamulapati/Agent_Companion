@@ -9,6 +9,7 @@ function createFakeConnection() {
   const sentCommands: { sessionId: string; command: Command }[] = [];
   const close = vi.fn();
   const connect = vi.fn();
+  let nextCommandId = 0;
   const factory = (options: RelayConnectionOptions) => {
     capturedOptions = options;
     connect.mockImplementation(() => options.onOpen?.());
@@ -16,7 +17,11 @@ function createFakeConnection() {
     return {
       connect,
       close,
-      sendCommand: vi.fn((sessionId: string, command: Command) => sentCommands.push({ sessionId, command })),
+      sendCommand: vi.fn((sessionId: string, command: Command) => {
+        sentCommands.push({ sessionId, command });
+        nextCommandId += 1;
+        return `cmd-${nextCommandId}`;
+      }),
     };
   };
   return { factory, sentCommands, connect, close, getOptions: () => capturedOptions! };
@@ -59,10 +64,42 @@ describe('useRelayConnection', () => {
     );
 
     act(() => {
-      result.current.sendCommand('sess-1', { type: 'pause', sessionId: 'sess-1' });
+      void result.current.sendCommand('sess-1', { type: 'pause', sessionId: 'sess-1' });
     });
 
     expect(fake.sentCommands).toEqual([{ sessionId: 'sess-1', command: { type: 'pause', sessionId: 'sess-1' } }]);
+  });
+
+  it("sendCommand's promise resolves with the ack once the connection's onCommandAck fires for that commandId", async () => {
+    const fake = createFakeConnection();
+    const { result } = renderHook(() =>
+      useRelayConnection({ url: 'ws://x', token: 't', onEvent: () => {}, createConnection: fake.factory })
+    );
+
+    let ackResult: unknown;
+    act(() => {
+      void result.current.sendCommand('sess-1', { type: 'pause', sessionId: 'sess-1' }).then((r) => {
+        ackResult = r;
+      });
+    });
+
+    act(() => {
+      fake.getOptions().onCommandAck?.('cmd-1', { status: 'delivered' });
+    });
+
+    await waitFor(() => expect(ackResult).toEqual({ status: 'delivered' }));
+  });
+
+  it("sendCommand's promise resolves failed without a connection (called before mount effect runs, or after unmount)", async () => {
+    const fake = createFakeConnection();
+    const { result, unmount } = renderHook(() =>
+      useRelayConnection({ url: 'ws://x', token: 't', onEvent: () => {}, createConnection: fake.factory })
+    );
+    unmount();
+
+    const ackResult = await result.current.sendCommand('sess-1', { type: 'pause', sessionId: 'sess-1' });
+    expect(ackResult.status).toBe('failed');
+    expect(fake.sentCommands).toEqual([]);
   });
 
   it('passes onLog through to the connection options', () => {

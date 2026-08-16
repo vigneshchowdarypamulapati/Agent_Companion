@@ -63,7 +63,7 @@ describe('daemon <-> relay integration', () => {
       relayClient = new RelayClient({
         url: `ws://127.0.0.1:${port}`,
         token: daemonToken,
-        onCommand: (command) => receivedCommands.push(command),
+        onCommand: (_commandId, command) => receivedCommands.push(command),
         onOpen: () => resolve(),
       });
     });
@@ -94,5 +94,11 @@ describe('daemon <-> relay integration', () => {
 
     await expect.poll(() => receivedCommands.length, { timeout: 2000 }).toBeGreaterThan(0);
     expect(receivedCommands[0]).toEqual(command);
+
+    // The full round trip: the daemon's command_ack reaches the exact browser that sent the
+    // command, over the real relay wire (not a fake/mocked hub).
+    const browserReceivedAck = waitForMessage(browserWs);
+    relayClient!.sendCommandAck('cmd-1', 'delivered');
+    expect(await browserReceivedAck).toEqual({ kind: 'command_ack', commandId: 'cmd-1', status: 'delivered' });
   });
 });

@@ -95,6 +95,134 @@ describe('RelayConnection', () => {
     ).not.toThrow();
   });
 
+  // --- command_ack: queue-while-offline, flush-on-reconnect, ack, and timeout ---
+
+  it('resolves onCommandAck with the ack the relay sends back', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const serverConnected = waitForConnection(wss);
+
+    const acks: any[] = [];
+    connection = new RelayConnection({
+      url: `ws://127.0.0.1:${fake.port}`,
+      token: 't',
+      onEvent: () => {},
+      onCommandAck: (commandId, result) => acks.push({ commandId, ...result }),
+    });
+    connection!.connect();
+    const serverSocket = await serverConnected;
+
+    const received = new Promise<any>((resolve) => {
+      serverSocket.once('message', (data) => resolve(JSON.parse(data.toString())));
+    });
+    const commandId = connection!.sendCommand('sess-1', { type: 'pause', sessionId: 'sess-1' });
+    const forwarded = await received;
+    expect(forwarded.commandId).toBe(commandId);
+
+    serverSocket.send(JSON.stringify({ kind: 'command_ack', commandId, status: 'delivered' }));
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(acks).toEqual([{ commandId, status: 'delivered', message: undefined }]);
+  });
+
+  it('queues a command sent while disconnected and transmits it once the connection opens', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    connection = new RelayConnection({ url: `ws://127.0.0.1:${fake.port}`, token: 't', onEvent: () => {} });
+    // Note: connect() deliberately not called yet — this is the exact regression: a command
+    // sent while there is no socket at all must not be dropped.
+    const commandId = connection!.sendCommand('sess-1', { type: 'inject_prompt', sessionId: 'sess-1', text: 'hi' });
+
+    const serverConnected = waitForConnection(wss);
+    connection!.connect();
+    const serverSocket = await serverConnected;
+
+    const received = new Promise<any>((resolve) => {
+      serverSocket.once('message', (data) => resolve(JSON.parse(data.toString())));
+    });
+    expect(await received).toMatchObject({
+      kind: 'command',
+      sessionId: 'sess-1',
+      commandId,
+      command: { type: 'inject_prompt', sessionId: 'sess-1', text: 'hi' },
+    });
+  });
+
+  it('reports a failed ack via onCommandAck after commandAckTimeoutMs elapses with no ack', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    const acks: any[] = [];
+    connection = new RelayConnection({
+      url: `ws://127.0.0.1:${fake.port}`,
+      token: 't',
+      onEvent: () => {},
+      onCommandAck: (commandId, result) => acks.push({ commandId, ...result }),
+      commandAckTimeoutMs: 30,
+    });
+    // Never connected — the command stays queued forever, so the timeout is what has to fire.
+    const commandId = connection!.sendCommand('sess-1', { type: 'inject_prompt', sessionId: 'sess-1', text: 'hi' });
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(acks).toHaveLength(1);
+    expect(acks[0].commandId).toBe(commandId);
+    expect(acks[0].status).toBe('failed');
+    expect(acks[0].message).toBeTruthy();
+  });
+
+  it('does not retransmit a command that was already sent once but never acked', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    let connectionCount = 0;
+    const messagesByConnection: any[][] = [];
+    const secondConnection = new Promise<void>((resolve) => {
+      wss.on('connection', (ws) => {
+        connectionCount += 1;
+        const index = connectionCount - 1;
+        const messages: any[] = [];
+        messagesByConnection.push(messages);
+        ws.on('message', (data) => {
+          messages.push(JSON.parse(data.toString()));
+          // Close only the first connection, and only after it actually received the command —
+          // otherwise the close could race sendCommand below and this test would prove nothing.
+          if (index === 0) ws.close();
+        });
+        if (index === 1) resolve();
+      });
+    });
+
+    let firstOpenResolved = false;
+    const firstOpen = new Promise<void>((resolve) => {
+      connection = new RelayConnection({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 't',
+        onEvent: () => {},
+        initialBackoffMs: 10,
+        maxBackoffMs: 50,
+        commandAckTimeoutMs: 5000,
+        onOpen: () => {
+          if (!firstOpenResolved) {
+            firstOpenResolved = true;
+            resolve();
+          }
+        },
+      });
+    });
+    connection!.connect();
+    await firstOpen;
+
+    connection!.sendCommand('sess-1', { type: 'pause', sessionId: 'sess-1' });
+
+    await secondConnection;
+    // The command was transmitted on the first connection (and never acked before it closed).
+    // Reconnecting must not send it a second time.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(messagesByConnection[0]).toHaveLength(1);
+    expect(messagesByConnection[1] ?? []).toEqual([]);
+  });
+
   it('calls onClose when the connection drops', async () => {
     const fake = await startFakeRelay();
     wss = fake.wss;
@@ -141,7 +269,7 @@ describe('RelayConnection', () => {
       initialBackoffMs: 10,
       maxBackoffMs: 50,
     });
-    connection.connect();
+    connection!.connect();
 
     await secondConnection;
     expect(connectionCount).toBe(2);

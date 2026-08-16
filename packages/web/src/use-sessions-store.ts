@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Command, SessionEvent, SessionStatus } from '@companion/protocol';
 import { RELAY_WS_URL } from './config';
 import { getActiveSessions, dismissSession as apiDismissSession, UnauthorizedError } from './api/sessions';
-import { useRelayConnection, type LiveEvent } from './use-relay-connection';
+import { useRelayConnection, type CommandAckResult, type LiveEvent } from './use-relay-connection';
 
 export interface SessionSummary {
   id: string;
@@ -36,7 +36,7 @@ export interface UseSessionsStoreResult {
   connected: boolean;
   loadError: string | undefined;
   dismissSession: (sessionId: string) => Promise<void>;
-  sendCommand: (sessionId: string, command: Command) => void;
+  sendCommand: (sessionId: string, command: Command) => Promise<CommandAckResult>;
   subscribe: (sessionId: string, handler: (message: LiveEvent) => void) => () => void;
 }
 

@@ -542,13 +542,14 @@ export async function createRelayServer({
                 const parsed = DaemonToRelayMessage.parse(rawFrame);
                 if (parsed.kind === 'event') {
                   await hub.routeFromDaemon(connection, parsed.sessionId, parsed.event, parsed.deliverySeq);
+                } else if (parsed.kind === 'command_ack') {
+                  await hub.routeCommandAck(connection, parsed);
                 }
-                // 'command_ack' and 'rpc_response' are validated but not yet routed anywhere —
-                // command acknowledgment and RPC are later tasks.
+                // 'rpc_response' is validated but not yet routed anywhere — RPC is a later task.
               } else {
                 const parsed = BrowserToRelayMessage.parse(rawFrame);
                 if (parsed.kind === 'command') {
-                  await hub.routeFromBrowser(connection, parsed.sessionId, parsed.command);
+                  await hub.routeFromBrowser(connection, parsed.sessionId, parsed.commandId, parsed.command);
                 }
                 // 'rpc_request' is validated but not yet routed anywhere — RPC is a later task.
               }

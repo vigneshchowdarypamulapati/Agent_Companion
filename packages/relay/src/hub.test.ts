@@ -170,10 +170,10 @@ describe('ConnectionHub', () => {
       projectPath: '/tmp/project',
       at: 1,
     });
-    await hub.routeFromBrowser(browser, 'sess-1', { type: 'pause', sessionId: 'sess-1' });
+    await hub.routeFromBrowser(browser, 'sess-1', 'cmd-1', { type: 'pause', sessionId: 'sess-1' });
 
     expect(daemon.sent).toHaveLength(1);
-    expect(daemon.sent[0]).toMatchObject({ kind: 'command', sessionId: 'sess-1' });
+    expect(daemon.sent[0]).toMatchObject({ kind: 'command', sessionId: 'sess-1', commandId: 'cmd-1' });
   });
 
   it('routeFromBrowser throws for an unknown session', async () => {
@@ -181,7 +181,7 @@ describe('ConnectionHub', () => {
     const browser = fakeConnection();
 
     await expect(
-      hub.routeFromBrowser(browser, 'does-not-exist', { type: 'pause', sessionId: 'does-not-exist' })
+      hub.routeFromBrowser(browser, 'does-not-exist', 'cmd-1', { type: 'pause', sessionId: 'does-not-exist' })
     ).rejects.toThrow();
   });
 
@@ -199,7 +199,7 @@ describe('ConnectionHub', () => {
     const intruder = fakeConnection({ deviceId: 'browser-x', deviceType: 'browser', userId: 'user-2' });
 
     await expect(
-      hub.routeFromBrowser(intruder, 'sess-1', { type: 'pause', sessionId: 'sess-1' })
+      hub.routeFromBrowser(intruder, 'sess-1', 'cmd-1', { type: 'pause', sessionId: 'sess-1' })
     ).rejects.toThrow();
   });
 
@@ -373,7 +373,7 @@ describe('ConnectionHub', () => {
       projectPath: '/tmp/project',
       at: 1,
     });
-    await hub.routeFromBrowser(browser, 'sess-1', { type: 'pause', sessionId: 'sess-1' });
+    await hub.routeFromBrowser(browser, 'sess-1', 'cmd-1', { type: 'pause', sessionId: 'sess-1' });
 
     expect(daemonSocketA.sent.filter((m) => m.kind === 'command')).toHaveLength(1);
     expect(daemonSocketB.sent.filter((m) => m.kind === 'command')).toHaveLength(1);
@@ -418,7 +418,7 @@ describe('ConnectionHub', () => {
     const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser' });
 
     await expect(
-      hub.routeFromBrowser(browser, 'sess-1', { type: 'stop', sessionId: 'sess-2' })
+      hub.routeFromBrowser(browser, 'sess-1', 'cmd-1', { type: 'stop', sessionId: 'sess-2' })
     ).rejects.toThrow('does not match');
   });
 
@@ -428,7 +428,7 @@ describe('ConnectionHub', () => {
     const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser' });
 
     await expect(
-      hub.routeFromBrowser(browser, 'sess-1', {
+      hub.routeFromBrowser(browser, 'sess-1', 'cmd-1', {
         type: 'start_session',
         projectPath: '/tmp/project',
         prompt: 'hi',
@@ -1238,5 +1238,110 @@ describe('ConnectionHub', () => {
     );
 
     expect(reconnected.sent.filter((m) => m.kind === 'event_ack')).toEqual([{ kind: 'event_ack', deliverySeq: 50 }]);
+  });
+
+  // --- command_ack: routing a daemon's delivery outcome back to the originating browser ---
+
+  it('routes a command_ack back to the browser that sent the original command', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromBrowser(browser, 'sess-1', 'cmd-1', { type: 'pause', sessionId: 'sess-1' });
+    await hub.routeCommandAck(daemon, { kind: 'command_ack', commandId: 'cmd-1', status: 'delivered' });
+
+    const acks = browser.sent.filter((m) => m.kind === 'command_ack');
+    expect(acks).toEqual([{ kind: 'command_ack', commandId: 'cmd-1', status: 'delivered', message: undefined }]);
+  });
+
+  it('does not route a command_ack to a different browser device belonging to the same user', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const sender = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(sender);
+    const otherTab = fakeConnection({ deviceId: 'browser-2', deviceType: 'browser', userId: 'user-1' });
+    hub.register(otherTab);
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromBrowser(sender, 'sess-1', 'cmd-1', { type: 'pause', sessionId: 'sess-1' });
+    await hub.routeCommandAck(daemon, { kind: 'command_ack', commandId: 'cmd-1', status: 'delivered' });
+
+    expect(sender.sent.filter((m) => m.kind === 'command_ack')).toHaveLength(1);
+    expect(otherTab.sent.filter((m) => m.kind === 'command_ack')).toHaveLength(0);
+  });
+
+  it('forwards a failed command_ack with its message', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromBrowser(browser, 'sess-1', 'cmd-1', { type: 'pause', sessionId: 'sess-1' });
+    await hub.routeCommandAck(daemon, {
+      kind: 'command_ack',
+      commandId: 'cmd-1',
+      status: 'failed',
+      message: 'Unknown session',
+    });
+
+    expect(browser.sent.filter((m) => m.kind === 'command_ack')).toEqual([
+      { kind: 'command_ack', commandId: 'cmd-1', status: 'failed', message: 'Unknown session' },
+    ]);
+  });
+
+  it('silently ignores a command_ack for an unknown or already-routed commandId', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+
+    await expect(
+      hub.routeCommandAck(daemon, { kind: 'command_ack', commandId: 'does-not-exist', status: 'delivered' })
+    ).resolves.toBeUndefined();
+  });
+
+  it('does not route a command_ack sent by a daemon connection belonging to a different user', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    await hub.routeFromDaemon(daemon, 'sess-1', {
+      type: 'session_started',
+      sessionId: 'sess-1',
+      projectPath: '/tmp/project',
+      at: 1,
+    });
+    await hub.routeFromBrowser(browser, 'sess-1', 'cmd-1', { type: 'pause', sessionId: 'sess-1' });
+
+    const intruderDaemon = fakeConnection({ deviceId: 'daemon-x', deviceType: 'daemon', userId: 'user-2' });
+    await hub.routeCommandAck(intruderDaemon, { kind: 'command_ack', commandId: 'cmd-1', status: 'delivered' });
+
+    expect(browser.sent.filter((m) => m.kind === 'command_ack')).toHaveLength(0);
   });
 });

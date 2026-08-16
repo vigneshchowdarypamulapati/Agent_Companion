@@ -101,6 +101,10 @@ export const RelayToDaemonMessage = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('command'),
     sessionId: z.string(),
+    // Forwarded unchanged from BrowserToRelayMessage's `command` envelope, so the daemon can
+    // echo it back on the command_ack it sends once dispatched (see DaemonToRelayMessage) —
+    // that's how the relay eventually knows which originating browser to route the ack to.
+    commandId: z.string(),
     command: Command,
   }),
   RpcRequestMessage,

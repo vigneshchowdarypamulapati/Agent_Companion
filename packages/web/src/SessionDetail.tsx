@@ -3,7 +3,7 @@ import { useParams, Link } from 'react-router';
 import type { Command, SessionEvent } from '@companion/protocol';
 import { getSessionEvents, UnauthorizedError } from './api/sessions';
 import { useSessions } from './SessionsProvider';
-import type { LiveEvent } from './use-relay-connection';
+import type { CommandAckResult, LiveEvent } from './use-relay-connection';
 import SessionStatusBar from './SessionStatusBar';
 import ActivityFeed from './ActivityFeed';
 import ModifiedFilesPanel from './ModifiedFilesPanel';
@@ -124,8 +124,12 @@ export default function SessionDetail({ token, onUnauthorized }: SessionDetailPr
     })();
   }, [connected]);
 
-  function handleSend(command: Command) {
-    sendCommand(sessionId, command);
+  // Shared by SessionControls and PermissionPrompt (which ignore the returned promise — they
+  // have no pending/retry UI of their own) and PromptInjectionBox (which awaits it to drive its
+  // pending/error/retry state — see that component for why the reply box specifically must
+  // never clear the user's typed text until this resolves 'delivered').
+  function handleSend(command: Command): Promise<CommandAckResult> {
+    return sendCommand(sessionId, command);
   }
 
   if (!historyLoaded || !sessionsLoaded) {

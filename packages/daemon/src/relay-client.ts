@@ -5,7 +5,12 @@ import { OutboundBuffer, type BufferedEvent } from './outbound-buffer.js';
 export interface RelayClientOptions {
   url: string;
   token: string;
-  onCommand: (command: Command) => void;
+  /**
+   * `commandId` is forwarded so the caller can reply with `sendCommandAck(commandId, ...)` once
+   * dispatch finishes (or throws) — see sendCommandAck's doc comment for how that relates to
+   * (and is distinct from) the `command_failed` SessionEvent.
+   */
+  onCommand: (commandId: string, command: Command) => void;
   onOpen?: () => void;
   onLog?: (message: string) => void;
   initialBackoffMs?: number;
@@ -28,7 +33,7 @@ export interface RelayClientOptions {
 export class RelayClient {
   private readonly url: string;
   private readonly token: string;
-  private readonly onCommand: (command: Command) => void;
+  private readonly onCommand: (commandId: string, command: Command) => void;
   private readonly onOpenCallback: () => void;
   private readonly onLog: (message: string) => void;
   private readonly initialBackoffMs: number;
@@ -116,6 +121,29 @@ export class RelayClient {
     this.ws.send(JSON.stringify(message));
   }
 
+  /**
+   * Reports the *delivery* outcome of a command back to the relay — 'delivered' once
+   * dispatchCommand has been handed the command and returned without throwing, 'failed' with a
+   * message if it threw. This is deliberately NOT the same signal as the `command_failed`
+   * SessionEvent (sent via sendEvent, see main.ts): that event reports execution failure to
+   * every browser watching the session's history, while this ack is a one-shot reply routed
+   * back only to the browser that sent this exact commandId, existing purely so that browser
+   * can stop showing "sending…" and either clear its input or show a retry affordance. Both are
+   * commonly fired from the same catch block for the same underlying error — that's expected,
+   * not a duplication to collapse (see CommandAckMessage's doc comment in @companion/protocol).
+   *
+   * Unlike sendEvent, this is best-effort and NOT buffered/replayed across a disconnect: if the
+   * socket isn't open, the ack is simply dropped. That's safe because the browser side owns its
+   * own ack timeout (see web's relay-connection.ts) — a lost ack surfaces there as a failure the
+   * user can retry, and re-sending a stale ack after a reconnect could race a fresh retry the
+   * user already issued under a new commandId.
+   */
+  sendCommandAck(commandId: string, status: 'delivered' | 'failed', message?: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const ackMessage: DaemonToRelayMessage = { kind: 'command_ack', commandId, status, message };
+    this.ws.send(JSON.stringify(ackMessage));
+  }
+
   private openSocket(): void {
     const base = `${this.url.replace(/\/$/, '')}/ws`;
     const separator = base.includes('?') ? '&' : '?';
@@ -167,7 +195,7 @@ export class RelayClient {
         return;
       }
       if (parsed.kind === 'command') {
-        this.onCommand(parsed.command);
+        this.onCommand(parsed.commandId, parsed.command);
       } else if (parsed.kind === 'event_ack') {
         // The relay does not send this yet (that's a later task), but handling it now means
         // nothing else has to change once it does: any acked entries stop being replayed.

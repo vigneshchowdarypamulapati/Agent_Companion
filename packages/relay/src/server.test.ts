@@ -144,7 +144,44 @@ describe('relay server', () => {
     browserWs.send(
       JSON.stringify({ kind: 'command', sessionId: 'sess-1', commandId: 'cmd-1', command: { type: 'pause', sessionId: 'sess-1' } })
     );
-    expect(await daemonReceived).toMatchObject({ kind: 'command', sessionId: 'sess-1' });
+    const forwardedCommand = await daemonReceived;
+    expect(forwardedCommand).toMatchObject({ kind: 'command', sessionId: 'sess-1', commandId: 'cmd-1' });
+  });
+
+  it("routes a daemon's command_ack back to the browser that sent the command", async () => {
+    const store = new InMemoryStore();
+    const pubsub = new InMemoryPubSub();
+    httpServer = await createRelayServer({ store, pubsub, identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
+
+    const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
+    const browserWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${browserToken}`);
+    sockets.push(daemonWs, browserWs);
+    await Promise.all([waitForOpen(daemonWs), waitForOpen(browserWs)]);
+
+    daemonWs.send(
+      JSON.stringify({
+        kind: 'event',
+        sessionId: 'sess-1',
+        deliverySeq: 1,
+        event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: Date.now() },
+      })
+    );
+    await waitForMessage(browserWs); // the session_started event echoed to the browser
+
+    const daemonReceived = waitForMessage(daemonWs);
+    browserWs.send(
+      JSON.stringify({ kind: 'command', sessionId: 'sess-1', commandId: 'cmd-1', command: { type: 'pause', sessionId: 'sess-1' } })
+    );
+    await daemonReceived;
+
+    const browserReceivedAck = waitForMessage(browserWs);
+    daemonWs.send(JSON.stringify({ kind: 'command_ack', commandId: 'cmd-1', status: 'delivered' }));
+    expect(await browserReceivedAck).toEqual({ kind: 'command_ack', commandId: 'cmd-1', status: 'delivered' });
   });
 
   it('rejects a WS connection with an invalid token', async () => {

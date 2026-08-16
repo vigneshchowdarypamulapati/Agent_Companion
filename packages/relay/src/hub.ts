@@ -1,5 +1,12 @@
 import { PushSubscriptionPayload } from '@companion/protocol';
-import type { Command, RelayToBrowserMessage, RelayToDaemonMessage, SessionEvent, SessionStatus } from '@companion/protocol';
+import type {
+  Command,
+  CommandAckMessage,
+  RelayToBrowserMessage,
+  RelayToDaemonMessage,
+  SessionEvent,
+  SessionStatus,
+} from '@companion/protocol';
 import type { Store } from './store.js';
 import type { PubSub } from './pubsub.js';
 import type { PushPayload, PushSender } from './push-sender.js';
@@ -16,16 +23,18 @@ export interface Connection {
  * The hub's internal pub/sub envelope, distinct from the four directional wire-protocol unions
  * in @companion/protocol. It's not itself a wire message in one direction — `dispatchLocal`
  * fans an 'event' out to every browser connection (the same shape as RelayToBrowserMessage's
- * `event` variant) and routes a 'command' to the one daemon connection that owns the session
- * (the same shape as RelayToDaemonMessage's `command` variant), so no single directional union
- * describes this type on its own. Rather than hand-duplicating those two field lists, they're
- * derived from the protocol types with `Extract` — this stays in sync automatically if either
- * variant's shape changes, without coupling RelayHubMessage to the unrelated variants
- * (command_ack, rpc_request, rpc_response) that appear in those unions but never flow through
- * the hub's internal envelope.
+ * `event` variant), routes a 'command' to the one daemon connection that owns the session
+ * (the same shape as RelayToDaemonMessage's `command` variant), and routes a 'command_ack' back
+ * to the one browser connection that sent the original command (the same shape as
+ * RelayToBrowserMessage's `command_ack` variant) — so no single directional union describes this
+ * type on its own. Rather than hand-duplicating those field lists, they're derived from the
+ * protocol types with `Extract` — this stays in sync automatically if any variant's shape
+ * changes, without coupling RelayHubMessage to the unrelated variants (rpc_request,
+ * rpc_response) that appear in those unions but never flow through the hub's internal envelope.
  */
 export type RelayHubMessage =
   | Extract<RelayToBrowserMessage, { kind: 'event' }>
+  | Extract<RelayToBrowserMessage, { kind: 'command_ack' }>
   | Extract<RelayToDaemonMessage, { kind: 'command' }>
   | Extract<RelayToDaemonMessage, { kind: 'event_ack' }>;
 
@@ -71,6 +80,15 @@ const CHANNEL = 'relay:message';
  * dismissable in a reasonable time. */
 const DEFAULT_DAEMON_DISCONNECT_GRACE_MS = 30_000;
 
+/**
+ * Upper bound on how long a `pendingCommandAcks` entry (see the field's doc comment) is kept
+ * around waiting for a `command_ack` that may never come. Deliberately longer than the
+ * browser's own ack timeout (web's relay-connection.ts) so a slow-but-genuine ack is never
+ * dropped here first — this is only a memory-leak backstop, not the mechanism a phone user's
+ * failure/retry UX depends on.
+ */
+const PENDING_COMMAND_ACK_TTL_MS = 60_000;
+
 export class ConnectionHub {
   /**
    * Connections are keyed by deviceId but stored as a Set, because the same device may hold
@@ -94,6 +112,21 @@ export class ConnectionHub {
    * be the wrong assumption anyway).
    */
   private daemonAckState = new Map<Connection, number>();
+
+  /**
+   * Correlates a browser-originated `commandId` back to the browser device that must receive
+   * the eventual `command_ack` — the ack itself (see CommandAckMessage) only carries the
+   * commandId and delivery outcome, not who sent the command, so this is the only place that
+   * link exists. Populated in `routeFromBrowser`, consumed (and removed) in `routeCommandAck`.
+   *
+   * In-memory only, like RateLimiter (see rate-limiter.ts) — the relay is a single process
+   * today (PubSub itself is in-memory-only, see README.md), so this is exactly as durable as
+   * the deployment it serves. A command whose ack never arrives (daemon crashes mid-dispatch,
+   * relay restarts) leaks its entry until `pruneExpiredCommandAcks` sweeps it — the browser side
+   * has its own ack timeout (see web's relay-connection.ts) and shows a failure independently of
+   * whether this entry is ever cleaned up, so nothing user-visible depends on the sweep.
+   */
+  private pendingCommandAcks = new Map<string, { userId: string; browserDeviceId: string; expiresAt: number }>();
 
   constructor(
     private store: Store,
@@ -293,7 +326,7 @@ export class ConnectionHub {
     connection.send({ kind: 'event_ack', deliverySeq: next });
   }
 
-  async routeFromBrowser(connection: Connection, sessionId: string, command: Command): Promise<void> {
+  async routeFromBrowser(connection: Connection, sessionId: string, commandId: string, command: Command): Promise<void> {
     if (command.type === 'start_session') {
       throw new Error('start_session cannot be routed through the relay');
     }
@@ -304,11 +337,54 @@ export class ConnectionHub {
     if (!session || session.userId !== connection.userId) {
       throw new Error(`Unknown session ${sessionId}`);
     }
+    this.pruneExpiredCommandAcks();
+    // Recorded before publishing so routeCommandAck can find it even if the daemon's ack
+    // (routed back through pubsub, possibly processed by this same synchronous tick in the
+    // in-memory pubsub implementation) arrives unexpectedly fast.
+    this.pendingCommandAcks.set(commandId, {
+      userId: connection.userId,
+      browserDeviceId: connection.deviceId,
+      expiresAt: this.now() + PENDING_COMMAND_ACK_TTL_MS,
+    });
     await this.pubsub.publish(CHANNEL, {
       userId: connection.userId,
       targetDeviceId: session.daemonDeviceId,
-      message: { kind: 'command', sessionId, command },
+      message: { kind: 'command', sessionId, commandId, command },
     } satisfies PubSubEnvelope);
+  }
+
+  /**
+   * Routes a daemon's `command_ack` (delivery outcome — see CommandAckMessage's doc comment for
+   * why this is distinct from the `command_failed` SessionEvent, which reports the dispatched
+   * command later *throwing*, not delivery itself) back to the one browser device that sent the
+   * originating command, using the correlation recorded in `routeFromBrowser`.
+   *
+   * An unknown `commandId` (already routed once, already expired, or never recorded because
+   * this relay process restarted between the command and its ack) is silently ignored: the ack
+   * has nowhere left to go, and the browser's own ack timeout is what actually guarantees the
+   * user sees a result either way — this is best-effort delivery on top of that guarantee, not
+   * the guarantee itself.
+   */
+  async routeCommandAck(connection: Connection, ack: CommandAckMessage): Promise<void> {
+    this.pruneExpiredCommandAcks();
+    const pending = this.pendingCommandAcks.get(ack.commandId);
+    // The userId check is defense in depth, not the primary safeguard: commandIds are
+    // client-generated UUIDs, so a different user's daemon guessing one is not a realistic
+    // attack, but there is no reason to route an ack cross-account if it ever happened.
+    if (!pending || pending.userId !== connection.userId) return;
+    this.pendingCommandAcks.delete(ack.commandId);
+    await this.pubsub.publish(CHANNEL, {
+      userId: pending.userId,
+      targetDeviceId: pending.browserDeviceId,
+      message: { kind: 'command_ack', commandId: ack.commandId, status: ack.status, message: ack.message },
+    } satisfies PubSubEnvelope);
+  }
+
+  private pruneExpiredCommandAcks(): void {
+    const now = this.now();
+    for (const [commandId, entry] of this.pendingCommandAcks) {
+      if (entry.expiresAt <= now) this.pendingCommandAcks.delete(commandId);
+    }
   }
 
   /**
