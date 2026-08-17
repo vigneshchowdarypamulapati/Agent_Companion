@@ -1172,7 +1172,7 @@ describe('ConnectionHub', () => {
     ]);
   });
 
-  it('does not advance (or send) the ack when the store write fails', async () => {
+  it('does not advance (or send) the ack when the store write fails, and never acks again on that connection even after a later success', async () => {
     const store = new InMemoryStore();
     const failingStore = Object.create(store) as typeof store;
     let shouldFail = false;
@@ -1197,8 +1197,12 @@ describe('ConnectionHub', () => {
     // Only the first (successful) store write produced an ack; the failed second one produced none.
     expect(daemon.sent.filter((m) => m.kind === 'event_ack')).toEqual([{ kind: 'event_ack', deliverySeq: 1 }]);
 
-    // A later event that does succeed still advances the ack past the failed one — a store
-    // failure only withholds the ack for that one event, it doesn't wedge the connection.
+    // A later event whose OWN store write succeeds must NOT advance the ack past the failed one:
+    // deliverySeq 2 is still sitting, unstored, in the daemon's buffer, and acking 3 would tell
+    // the daemon it's safe to drop 2 as well (OutboundBuffer.acknowledge drops everything <=
+    // the acked value) — permanent silent loss of data the relay never actually persisted. This
+    // is different from the eviction-gap case: the daemon never decided to skip 2, so it has no
+    // independent reason to believe dropping it is safe. See ackDelivery's doc in hub.ts.
     shouldFail = false;
     await hub.routeFromDaemon(
       daemon,
@@ -1206,10 +1210,62 @@ describe('ConnectionHub', () => {
       { type: 'assistant_text', sessionId: 'sess-1', text: 'hi again', at: 3 },
       3
     );
-    expect(daemon.sent.filter((m) => m.kind === 'event_ack')).toEqual([
-      { kind: 'event_ack', deliverySeq: 1 },
-      { kind: 'event_ack', deliverySeq: 3 },
-    ]);
+    expect(daemon.sent.filter((m) => m.kind === 'event_ack')).toEqual([{ kind: 'event_ack', deliverySeq: 1 }]);
+  });
+
+  it('serializes concurrent frames per connection: a later deliverySeq that finishes storing first must not ack past an earlier one that is still in flight and then fails', async () => {
+    // Regression test for the review finding on this task: server.ts dispatches each inbound WS
+    // frame as an independent, un-awaited async chain, so two 'event' frames for the same daemon
+    // connection can start concurrently — exactly what happens on a reconnect replay burst. This
+    // test fails without routeFromDaemon's per-connection serialization (daemonProcessingQueues):
+    // without it, deliverySeq 2's fast store write would resolve and ack(2) would be sent BEFORE
+    // deliverySeq 1's slow store write is even known to fail, silently telling the daemon it's
+    // safe to drop deliverySeq 1 (which it never actually stored).
+    const store = new InMemoryStore();
+    const controllableStore = Object.create(store) as typeof store;
+    let releaseSlowWrite!: () => void;
+    const slowWriteGate = new Promise<void>((resolve) => {
+      releaseSlowWrite = resolve;
+    });
+    controllableStore.appendSessionEvent = async (...args: Parameters<typeof store.appendSessionEvent>) => {
+      const [, event] = args;
+      if (event.type === 'session_started') {
+        // The earlier frame (deliverySeq 1): deliberately held open until the later frame
+        // (deliverySeq 2) has had a chance to run, then fails — simulating "the earlier
+        // event's write is still in flight when the later one finishes and then fails."
+        await slowWriteGate;
+        throw new Error('store unavailable for deliverySeq 1');
+      }
+      // The later frame (deliverySeq 2): resolves immediately, well before the gate above opens.
+      return store.appendSessionEvent(...args);
+    };
+    const hub = await startedHub(controllableStore);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon' });
+
+    // Dispatched back-to-back without awaiting the first — mirrors server.ts's un-awaited
+    // per-message handlers, which is exactly the shape that would race without serialization.
+    const seq1 = hub.routeFromDaemon(
+      daemon,
+      'sess-1',
+      { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: 1 },
+      1
+    );
+    const seq2 = hub.routeFromDaemon(daemon, 'sess-1', { type: 'assistant_text', sessionId: 'sess-1', text: 'hi', at: 2 }, 2);
+
+    // Give the (serialized) queue a turn to actually start processing seq1 and, if unserialized,
+    // let seq2 race ahead of it — then release seq1's gate so it can finally fail.
+    await Promise.resolve();
+    await Promise.resolve();
+    releaseSlowWrite();
+
+    const results = await Promise.allSettled([seq1, seq2]);
+    expect(results[0].status).toBe('rejected');
+    expect(results[1].status).toBe('fulfilled');
+
+    // The ack must never have advanced past the still-failed deliverySeq 1 — in particular,
+    // never an ack for deliverySeq 2, even though deliverySeq 2's own store write succeeded.
+    const acks = daemon.sent.filter((m) => m.kind === 'event_ack');
+    expect(acks).toEqual([]);
   });
 
   it('tracks ack state per connection object, so a reconnected daemon is not assumed to start at deliverySeq 1', async () => {

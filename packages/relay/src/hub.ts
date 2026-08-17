@@ -103,15 +103,41 @@ export class ConnectionHub {
   private pendingDaemonStops = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
-   * Per-daemon-connection high-water mark of `deliverySeq` values whose events have been
-   * durably stored (see `routeFromDaemon` / `ackDelivery`). Keyed by the `Connection` object
-   * itself, not `deviceId`: a fresh object is created on every reconnect (see server.ts), so
-   * this naturally starts empty for a new connection rather than needing to be reset by hand —
-   * which is exactly right, since a reconnected daemon's replay can legitimately start at any
-   * `deliverySeq`, not necessarily 1 (see the class-level doc below for why "start at 1" would
-   * be the wrong assumption anyway).
+   * Per-daemon-connection ack bookkeeping (see `routeFromDaemon` / `ackDelivery`). Keyed by the
+   * `Connection` object itself, not `deviceId`: a fresh object is created on every reconnect
+   * (see server.ts), so this naturally starts empty for a new connection rather than needing to
+   * be reset by hand — which is exactly right, since a reconnected daemon's replay can
+   * legitimately start at any `deliverySeq`, not necessarily 1 (see `ackDelivery`'s doc for why
+   * "start at 1" would be the wrong assumption anyway).
+   *
+   * `ackedThroughDeliverySeq` is the highest `deliverySeq` acked so far. `poisoned` is set the
+   * first time a *received* event's `store.appendSessionEvent` call fails on this connection,
+   * and once set, this connection never sends another `event_ack` for the rest of its lifetime
+   * — see `ackDelivery`'s doc for why a later success must not be allowed to ack past it.
    */
-  private daemonAckState = new Map<Connection, number>();
+  private daemonAckState = new Map<Connection, { ackedThroughDeliverySeq: number; poisoned: boolean }>();
+
+  /**
+   * Per-daemon-connection processing queue: each entry is a promise chain that every
+   * `routeFromDaemon` call for that connection appends itself to and awaits, so frames from one
+   * daemon connection are always fully processed — validation, the store write, publish, and
+   * the resulting ack — one at a time, in the order their frames arrived, never concurrently.
+   *
+   * This is required, not just nice-to-have: server.ts's `ws.on('message', ...)` handler
+   * dispatches each frame as an independent, un-awaited async chain (`void (async () => {...
+   * })()`), so without this queue two `event` frames arriving close together — exactly the
+   * reconnect-replay burst this whole feature exists to serve — would run their
+   * `routeFromDaemon` calls concurrently. Against a real Postgres store, `getSession` /
+   * `updateSessionStatus` / `appendSessionEvent` are separate statements/transactions with no
+   * cross-call ordering guarantee (see postgres-store.ts): a later `deliverySeq`'s writes could
+   * finish and get acked before an earlier one (still in flight) is even known to have
+   * succeeded or failed. If that earlier one then failed, the daemon would already have been
+   * told it's safe to drop it — permanent, silent event loss, the exact failure mode Task 2
+   * exists to prevent. A WebSocket only guarantees frames ARRIVE in order (TCP's guarantee);
+   * this queue is what guarantees they are also *processed* in that order, which `ackDelivery`'s
+   * safety depends on.
+   */
+  private daemonProcessingQueues = new Map<Connection, Promise<void>>();
 
   /**
    * Correlates a browser-originated `commandId` back to the browser device that must receive
@@ -159,8 +185,12 @@ export class ConnectionHub {
     // Not gated on the connection still being present in `connections` below: it's harmless to
     // delete a key that was never inserted (no ack was ever sent), and this keeps ack-state
     // cleanup unconditional rather than one more thing a future refactor of the block below
-    // could accidentally skip.
+    // could accidentally skip. Deleting `daemonProcessingQueues` here is pure hygiene, not a
+    // cancellation — any in-flight entries in that chain keep running against the now-closed
+    // `connection` to completion (harmless: no further `routeFromDaemon` calls for this
+    // connection object can happen once its socket is closed, so nothing new appends to it).
     this.daemonAckState.delete(connection);
+    this.daemonProcessingQueues.delete(connection);
 
     const set = this.connections.get(connection.deviceId);
     if (!set) return;
@@ -240,8 +270,35 @@ export class ConnectionHub {
    * `deliverySeq` is optional only so every pre-existing call site in tests (which predate
    * event acking and don't care about it) keeps compiling unchanged; every real caller
    * (server.ts) always passes it, since every DaemonToRelayMessage `event` frame carries one.
+   *
+   * Every call for a given `connection` is chained onto that connection's entry in
+   * `daemonProcessingQueues` and awaited before `processDaemonEvent` actually runs — see that
+   * field's doc for why serialization (not just "start the work") is required here. The chain
+   * itself is built from `.then(ok, ok)` so one call's rejection never poisons the *queue* for
+   * the next call (each frame still gets processed on its own turn), while the promise handed
+   * back to *this* call's own caller (`result`, returned below) still resolves/rejects exactly
+   * the way `processDaemonEvent` for this specific frame did — server.ts's per-message catch
+   * block still sees the real error and still sends a real `{kind:'error'}` frame for it.
    */
   async routeFromDaemon(connection: Connection, sessionId: string, event: SessionEvent, deliverySeq?: number): Promise<void> {
+    const previousTurn = this.daemonProcessingQueues.get(connection) ?? Promise.resolve();
+    const thisTurn = previousTurn.then(
+      () => this.processDaemonEvent(connection, sessionId, event, deliverySeq),
+      () => this.processDaemonEvent(connection, sessionId, event, deliverySeq)
+    );
+    this.daemonProcessingQueues.set(
+      connection,
+      thisTurn.then(
+        () => undefined,
+        () => undefined
+      )
+    );
+    return thisTurn;
+  }
+
+  /** The actual per-frame work `routeFromDaemon` serializes — see that method's doc. Never call
+   * this directly; always go through `routeFromDaemon` so ordering is enforced. */
+  private async processDaemonEvent(connection: Connection, sessionId: string, event: SessionEvent, deliverySeq?: number): Promise<void> {
     if (event.sessionId !== sessionId) {
       throw new Error('Envelope sessionId does not match event payload sessionId');
     }
@@ -273,7 +330,17 @@ export class ConnectionHub {
       }
     }
 
-    const stored = await this.store.appendSessionEvent(sessionId, event);
+    let stored;
+    try {
+      stored = await this.store.appendSessionEvent(sessionId, event);
+    } catch (err) {
+      // A *received* event whose store write failed — as opposed to an envelope/ownership
+      // rejection above, which never reached the store at all. See markDeliveryFailed's doc for
+      // why this specifically (and only this) permanently freezes this connection's ack.
+      if (deliverySeq !== undefined) this.markDeliveryFailed(connection);
+      throw err;
+    }
+
     await this.pubsub.publish(CHANNEL, {
       userId: connection.userId,
       message: { kind: 'event', sessionId, seq: stored.seq, event },
@@ -314,16 +381,41 @@ export class ConnectionHub {
    *      only to stop the daemon re-sending what it *did* send and the relay *did* store, not
    *      to somehow account for what the daemon already gave up on.
    *
-   * So: track a simple running maximum of "deliverySeq values whose store write has succeeded,"
-   * per connection (see `daemonAckState`), and advance across gaps freely. `Math.max` also
-   * makes this robust to a redundant/duplicate resend landing after a higher value already
-   * acked (the ack the daemon has already dropped everything <= is not walked backwards).
+   * That reasoning covers gaps caused by the *daemon* deciding not to send something. It does
+   * NOT cover a `deliverySeq` the daemon DID send and the relay DID receive, whose store write
+   * then failed (`processDaemonEvent`'s catch, `markDeliveryFailed`) — the relay has no
+   * independent confirmation the daemon knows to give up on that one, because it doesn't; it's
+   * still sitting in the daemon's OutboundBuffer waiting to be acked. Acking a later, higher
+   * `deliverySeq` past it would tell the daemon it's safe to drop that still-unstored entry too
+   * (`OutboundBuffer.acknowledge` drops everything `<=` the acked value) — silent, permanent
+   * loss of data the relay never actually persisted. So `ackDelivery` is gap-tolerant only for
+   * *unreceived* gaps; once a *received* event fails to store, `daemonAckState.poisoned` is set
+   * (`markDeliveryFailed`) and this method becomes a permanent no-op for that connection — even
+   * for later `deliverySeq` values whose own store write succeeds. The only way that entry can
+   * ever actually reach the relay again is a fresh connection replaying the daemon's still-full
+   * buffer from scratch (see relay-client.ts's reconnect replay), which is exactly the case this
+   * deliberately waits for instead of guessing it's safe to move on.
+   *
+   * This safety depends on `routeFromDaemon` serializing frames per connection (see
+   * `daemonProcessingQueues`): only because a lower `deliverySeq`'s outcome is always fully known
+   * before a higher one is even attempted can "the first failure permanently freezes" be
+   * expressed as a simple flag, rather than needing to reason about which of several
+   * concurrently in-flight writes might still fail.
    */
   private ackDelivery(connection: Connection, deliverySeq: number): void {
-    const previous = this.daemonAckState.get(connection) ?? 0;
-    const next = Math.max(previous, deliverySeq);
-    this.daemonAckState.set(connection, next);
-    connection.send({ kind: 'event_ack', deliverySeq: next });
+    const state = this.daemonAckState.get(connection) ?? { ackedThroughDeliverySeq: 0, poisoned: false };
+    if (state.poisoned) return;
+    state.ackedThroughDeliverySeq = Math.max(state.ackedThroughDeliverySeq, deliverySeq);
+    this.daemonAckState.set(connection, state);
+    connection.send({ kind: 'event_ack', deliverySeq: state.ackedThroughDeliverySeq });
+  }
+
+  /** See `ackDelivery`'s doc for why a store failure for a received event permanently freezes
+   * this connection's ack rather than just skipping the one failed value. */
+  private markDeliveryFailed(connection: Connection): void {
+    const state = this.daemonAckState.get(connection) ?? { ackedThroughDeliverySeq: 0, poisoned: false };
+    state.poisoned = true;
+    this.daemonAckState.set(connection, state);
   }
 
   async routeFromBrowser(connection: Connection, sessionId: string, commandId: string, command: Command): Promise<void> {
