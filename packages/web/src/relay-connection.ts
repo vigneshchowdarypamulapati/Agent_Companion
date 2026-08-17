@@ -185,9 +185,16 @@ export class RelayConnection {
   }
 
   private failPending(commandId: string): void {
+    // Deliberately does not claim the command failed to reach the daemon — it may well have:
+    // the daemon can dispatch a command and still never get its ack back to us (its own socket
+    // closed at the wrong instant, or the relay's correlation entry was lost to a restart — see
+    // hub.ts's pendingCommandAcks doc comment), in which case this really is a false-negative
+    // timeout, not a real failure. Retry is still the right affordance (never leave the user
+    // stuck with unsent text), but the copy has to leave room for "this may have already gone
+    // through" so the user can judge whether retrying risks a duplicate before tapping it.
     this.resolvePending(commandId, {
       status: 'failed',
-      message: 'Timed out waiting for the daemon to acknowledge this command',
+      message: "No response from the daemon in time — it may have already received this. Retry only if you don't see it take effect.",
     });
   }
 

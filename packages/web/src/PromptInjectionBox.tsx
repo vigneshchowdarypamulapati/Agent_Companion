@@ -36,7 +36,15 @@ export default function PromptInjectionBox({ sessionId, disabled, placeholder, o
     Promise.resolve(onSend({ type: 'inject_prompt', sessionId, text: value }))
       .then((result: CommandAckResult | undefined) => {
         if (result?.status === 'delivered') {
-          setText('');
+          // Clear only if the box still holds exactly what was submitted. The input is
+          // deliberately never disabled while pending (see below), so a user can keep typing
+          // during the up-to-10s ack wait — e.g. appending "...and check the logs" while the
+          // original snapshot is still in flight. If we cleared unconditionally here, that
+          // reconnect-delivered ack for the *old* snapshot would wipe out text the user added
+          // since, silently destroying it — exactly the class of bug this component exists to
+          // prevent. Comparing against the value actually submitted (not just "is it non-empty")
+          // ensures only a still-matching snapshot gets cleared.
+          setText((prev) => (prev === value ? '' : prev));
           setSendState({ phase: 'idle' });
         } else {
           setSendState({ phase: 'error', message: result?.message ?? DEFAULT_ERROR_MESSAGE });
@@ -54,7 +62,10 @@ export default function PromptInjectionBox({ sessionId, disabled, placeholder, o
   }
 
   function handleRetry() {
-    if (!text.trim() || sendState.phase === 'pending') return;
+    // Mirrors the Send button's own guard (disabled while a permission response is pending —
+    // the daemon rejects any command in that state) so Retry can't dispatch what the button
+    // itself refuses to.
+    if (disabled || !text.trim() || sendState.phase === 'pending') return;
     submit(text);
   }
 
@@ -81,20 +92,33 @@ export default function PromptInjectionBox({ sessionId, disabled, placeholder, o
       </div>
 
       {sendState.phase === 'error' && (
-        <div role="alert" className="flex items-center justify-between gap-2 bg-danger-bg text-danger-text rounded-md px-3 py-2 text-sm">
+        <div role="alert" className="flex items-center justify-between gap-2 bg-danger-bg text-danger-text rounded-md pl-3 pr-1 py-1 text-sm">
           <span>{sendState.message}</span>
-          <button type="button" onClick={handleRetry} className="underline font-medium shrink-0">
+          {/* min-h-11/min-w-11 (44px) meets both Android Material's 48dp and iOS's 44pt minimum
+              touch target — the underline-only link this used to be was closer to the text's own
+              14-20px line height. The alert's own padding is trimmed (pl-3 pr-1 py-1 above, vs.
+              the previous px-3 py-2) so the button's own padding does the sizing work instead of
+              stacking on top of it, keeping the banner from growing more than necessary. */}
+          <button
+            type="button"
+            onClick={handleRetry}
+            disabled={disabled}
+            className="underline font-medium shrink-0 min-h-11 min-w-11 px-3 flex items-center justify-center disabled:opacity-50 disabled:no-underline"
+          >
             Retry
           </button>
         </div>
       )}
 
-      {/* Screen-reader-only status announcement: a phone user who tapped Send and moved their
-          attention elsewhere (this is exactly the "reply from a push notification" scenario)
-          must not have to keep watching the button to learn their reply failed. */}
+      {/* Screen-reader-only status announcement for the pending state: a phone user who tapped
+          Send and moved their attention elsewhere (this is exactly the "reply from a push
+          notification" scenario) must not have to keep watching the button to learn a send is in
+          flight. The error case is deliberately NOT also announced here: role="alert" above is
+          itself an assertive live region that screen readers announce as soon as it appears, so
+          repeating its message in this aria-live="polite" span would announce the same failure
+          twice. */}
       <span role="status" aria-live="polite" className="sr-only">
         {pending && 'Sending your reply…'}
-        {sendState.phase === 'error' && `Failed to send: ${sendState.message}`}
       </span>
     </form>
   );

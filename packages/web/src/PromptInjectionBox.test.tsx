@@ -92,10 +92,11 @@ describe('PromptInjectionBox', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(input).toHaveValue('are you still there?');
 
-    // 2. The user sees a visible, actionable error (both a live-region announcement and an
-    //    on-screen alert with a retry affordance).
-    expect(screen.getByRole('status')).toHaveTextContent(/failed to send/i);
+    // 2. The user sees a visible, actionable error. role="alert" is itself an assertive live
+    //    region (announced on its own), so the polite role="status" span deliberately stays
+    //    silent here rather than repeating the same failure a second time.
     expect(screen.getByRole('alert')).toHaveTextContent(/timed out waiting/i);
+    expect(screen.getByRole('status')).not.toHaveTextContent(/timed out waiting/i);
     const retryButton = screen.getByRole('button', { name: /retry/i });
 
     // 3. Retry (after "reconnecting" — onSend now resolves delivered) succeeds and clears the
@@ -104,6 +105,31 @@ describe('PromptInjectionBox', () => {
     await waitFor(() => expect(input).toHaveValue(''));
     expect(onSend).toHaveBeenCalledTimes(2);
     expect(onSend).toHaveBeenNthCalledWith(2, { type: 'inject_prompt', sessionId: 'sess-1', text: 'are you still there?' });
+  });
+
+  it('does not clear text appended while the original submission is still pending', async () => {
+    // Same failure class as "THE regression" above, but the danger here is the *clear*, not the
+    // error path: the ack for an old snapshot arrives as 'delivered' (e.g. the queued command
+    // finally got through) after the user has already appended more text. Clearing unconditionally
+    // on 'delivered' would silently destroy the appended words even though nothing ever failed.
+    const pending = deferred<CommandAckResult>();
+    const onSend = vi.fn(() => pending.promise);
+    render(<PromptInjectionBox sessionId="sess-1" disabled={false} onSend={onSend} />);
+
+    const input = screen.getByLabelText('Prompt');
+    await userEvent.type(input, 'hello');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+    expect(onSend).toHaveBeenCalledWith({ type: 'inject_prompt', sessionId: 'sess-1', text: 'hello' });
+
+    // The input is never disabled while pending, precisely so this is possible.
+    await userEvent.type(input, ' and check the logs');
+    expect(input).toHaveValue('hello and check the logs');
+
+    // The ack that resolves now is for the original 'hello' snapshot.
+    pending.resolve({ status: 'delivered' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeInTheDocument());
+
+    expect(input).toHaveValue('hello and check the logs');
   });
 
   it('restores the input and shows an error when onSend rejects unexpectedly', async () => {
@@ -116,5 +142,24 @@ describe('PromptInjectionBox', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(input).toHaveValue('hello');
+  });
+
+  it('disables Retry (and it does nothing when clicked) while a permission response is pending', async () => {
+    const onSend = vi.fn().mockResolvedValueOnce({ status: 'failed', message: 'nope' });
+    const { rerender } = render(<PromptInjectionBox sessionId="sess-1" disabled={false} onSend={onSend} />);
+
+    const input = screen.getByLabelText('Prompt');
+    await userEvent.type(input, 'hello');
+    await userEvent.click(screen.getByRole('button', { name: /send/i }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+
+    // A permission request now blocks new commands — the daemon always rejects one while a
+    // permission response is outstanding, same as the Send button already respects via `disabled`.
+    rerender(<PromptInjectionBox sessionId="sess-1" disabled onSend={onSend} />);
+
+    const retryButton = screen.getByRole('button', { name: /retry/i });
+    expect(retryButton).toBeDisabled();
+    await userEvent.click(retryButton);
+    expect(onSend).toHaveBeenCalledTimes(1);
   });
 });

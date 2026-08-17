@@ -18,9 +18,24 @@ import { Command } from './commands.js';
  * one shape is exactly the mistake this refactor undoes.
  */
 
+/**
+ * Every `commandId` in the system is minted by `crypto.randomUUID()` (web's relay-connection.ts)
+ * — a canonical UUID is always exactly 36 characters. Bounding the wire schema to that length
+ * (rather than an unbounded `z.string()`) matters because the relay retains one
+ * `pendingCommandAcks` entry per commandId for up to 60s (see hub.ts's
+ * PENDING_COMMAND_ACK_TTL_MS): with a 1 MiB maxPayload and no per-connection command rate limit,
+ * an unbounded id would let a single authenticated, malicious user pin arbitrarily large amounts
+ * of relay memory just by sending oversized ids. `.uuid()` is intentionally not used here — it
+ * would reject a legitimately-generated id if `randomUUID()`'s version/variant bits ever differ
+ * from what a given zod version's `.uuid()` validator accepts; a plain length bound achieves the
+ * same memory-safety goal without coupling this schema to UUID format details it doesn't need to
+ * care about.
+ */
+const CommandId = z.string().max(36);
+
 export const CommandAckMessage = z.object({
   kind: z.literal('command_ack'),
-  commandId: z.string(),
+  commandId: CommandId,
   // 'delivered' means the daemon received and dispatched the command — not that the underlying
   // work finished. Whether/how completion is ever reported is a separate concern for later.
   status: z.enum(['delivered', 'failed']),
@@ -104,7 +119,7 @@ export const RelayToDaemonMessage = z.discriminatedUnion('kind', [
     // Forwarded unchanged from BrowserToRelayMessage's `command` envelope, so the daemon can
     // echo it back on the command_ack it sends once dispatched (see DaemonToRelayMessage) —
     // that's how the relay eventually knows which originating browser to route the ack to.
-    commandId: z.string(),
+    commandId: CommandId,
     command: Command,
   }),
   RpcRequestMessage,
@@ -117,7 +132,7 @@ export const BrowserToRelayMessage = z.discriminatedUnion('kind', [
     sessionId: z.string(),
     // Client-generated, echoed back on the command_ack the relay eventually forwards from the
     // daemon, so the browser can correlate an ack with the command it sent.
-    commandId: z.string(),
+    commandId: CommandId,
     command: Command,
   }),
   RpcRequestMessage,
