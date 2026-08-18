@@ -1,6 +1,20 @@
 import { WebSocket } from 'ws';
-import { RelayToDaemonMessage, type Command, type DaemonToRelayMessage, type SessionEvent } from '@companion/protocol';
+import {
+  RelayToDaemonMessage,
+  RPC_ERROR_CODES,
+  type Command,
+  type DaemonToRelayMessage,
+  type RpcErrorCode,
+  type SessionEvent,
+} from '@companion/protocol';
 import { OutboundBuffer, type BufferedEvent } from './outbound-buffer.js';
+
+/** The outcome `onRpcRequest` reports back — exactly one of `result`/`error`, mirroring the wire
+ * invariant `RpcResponseMessage` enforces (see @companion/protocol's relay.ts). */
+export interface RpcRequestOutcome {
+  result?: unknown;
+  error?: RpcErrorCode;
+}
 
 export interface RelayClientOptions {
   url: string;
@@ -11,6 +25,17 @@ export interface RelayClientOptions {
    * (and is distinct from) the `command_failed` SessionEvent.
    */
   onCommand: (commandId: string, command: Command) => void;
+  /**
+   * Dispatches a device-scoped `rpc_request` (see relay.ts's RpcRequestMessage doc) to whatever
+   * method registry the caller wires in — see rpc-handlers.ts's `dispatchRpc` for the real
+   * implementation main.ts uses. Kept as an injected callback, like `onCommand`, rather than this
+   * class importing rpc-handlers.ts directly: RelayClient stays transport-only and testable
+   * without a real method registry. May reject/throw; `handleRpcRequest` below treats that the
+   * same as an explicit `{error: 'handler_error'}` result rather than let it become an unhandled
+   * rejection. Defaults to reporting every method as unknown, for callers (and most existing
+   * tests) that don't care about RPC at all.
+   */
+  onRpcRequest?: (method: string, params: unknown) => RpcRequestOutcome | Promise<RpcRequestOutcome>;
   onOpen?: () => void;
   onLog?: (message: string) => void;
   initialBackoffMs?: number;
@@ -34,6 +59,7 @@ export class RelayClient {
   private readonly url: string;
   private readonly token: string;
   private readonly onCommand: (commandId: string, command: Command) => void;
+  private readonly onRpcRequest: (method: string, params: unknown) => RpcRequestOutcome | Promise<RpcRequestOutcome>;
   private readonly onOpenCallback: () => void;
   private readonly onLog: (message: string) => void;
   private readonly initialBackoffMs: number;
@@ -63,6 +89,7 @@ export class RelayClient {
     this.url = options.url;
     this.token = options.token;
     this.onCommand = options.onCommand;
+    this.onRpcRequest = options.onRpcRequest ?? (() => ({ error: RPC_ERROR_CODES.UNKNOWN_METHOD }));
     this.onOpenCallback = options.onOpen ?? (() => {});
     this.onLog = options.onLog ?? (() => {});
     this.initialBackoffMs = options.initialBackoffMs ?? 500;
@@ -144,6 +171,39 @@ export class RelayClient {
     this.ws.send(JSON.stringify(ackMessage));
   }
 
+  /**
+   * Runs `onRpcRequest` for an inbound `rpc_request` and sends its outcome back as an
+   * `rpc_response`. `onRpcRequest` is documented as allowed to reject/throw (a bug in a future
+   * handler shouldn't be able to leave the relay's request permanently unanswered), so that's
+   * caught here the same as an explicit `{error: 'handler_error'}` result — see RpcRequestOutcome.
+   */
+  private async handleRpcRequest(requestId: string, method: string, params: unknown): Promise<void> {
+    let outcome: RpcRequestOutcome;
+    try {
+      outcome = await this.onRpcRequest(method, params);
+    } catch {
+      outcome = { error: RPC_ERROR_CODES.HANDLER_ERROR };
+    }
+    this.sendRpcResponse(requestId, outcome);
+  }
+
+  /**
+   * Best-effort, like sendCommandAck: if the socket isn't open right now, the response is simply
+   * dropped rather than buffered/replayed. This mirrors the browser side's own choice not to queue
+   * RPC while offline (see relay-connection.ts's callDaemon) — an RPC answer that arrives after a
+   * disconnect-reconnect cycle is answering a question the caller has already given up on (its own
+   * rpcTimeoutMs has already rejected the promise), so there is nothing useful left to deliver it
+   * to.
+   */
+  private sendRpcResponse(requestId: string, outcome: RpcRequestOutcome): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const message: DaemonToRelayMessage =
+      outcome.error !== undefined
+        ? { kind: 'rpc_response', requestId, error: outcome.error }
+        : { kind: 'rpc_response', requestId, result: outcome.result };
+    this.ws.send(JSON.stringify(message));
+  }
+
   private openSocket(): void {
     const base = `${this.url.replace(/\/$/, '')}/ws`;
     const separator = base.includes('?') ? '&' : '?';
@@ -200,8 +260,9 @@ export class RelayClient {
         // The relay does not send this yet (that's a later task), but handling it now means
         // nothing else has to change once it does: any acked entries stop being replayed.
         this.buffer.acknowledge(parsed.deliverySeq);
+      } else if (parsed.kind === 'rpc_request') {
+        void this.handleRpcRequest(parsed.requestId, parsed.method, parsed.params);
       }
-      // 'rpc_request' is not yet handled — RPC dispatch is a later task.
     });
 
     ws.on('close', () => {

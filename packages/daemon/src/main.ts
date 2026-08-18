@@ -1,6 +1,7 @@
 import { hostname, homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { SessionManager } from './session-manager.js';
 import { createHttpServer } from './http-server.js';
 import { realQueryFn } from './real-agent-sdk.js';
@@ -8,6 +9,7 @@ import { getOrCreateDeviceToken } from './device-auth.js';
 import { getOrCreateLocalToken } from './local-auth.js';
 import { RelayClient } from './relay-client.js';
 import { dispatchCommandWithAck } from './command-dispatcher.js';
+import { dispatchRpc } from './rpc-handlers.js';
 import type { SessionEvent } from '@companion/protocol';
 
 const PORT = Number(process.env.COMPANION_DAEMON_PORT ?? 4310);
@@ -21,6 +23,29 @@ const LOCAL_HTTP_TOKEN_PATH =
 function relayHttpUrl(wsUrl: string): string {
   return wsUrl.replace(/^ws/, 'http');
 }
+
+/**
+ * Reads this package's own `version` field out of package.json at startup, rather than hardcoding
+ * a copy here that would silently drift the next time package.json is bumped. `dist/main.js` and
+ * `src/main.ts` are both exactly one directory below the package root (see tsconfig.json's
+ * `rootDir`/`outDir`), so `../package.json` resolves correctly whether this runs from source
+ * (tests, `tsx`) or from the built `dist/`. Falls back to 'unknown' rather than throwing — a
+ * missing/unreadable package.json should never be why the daemon can't start.
+ */
+function readDaemonVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf-8')) as { version?: string };
+    return pkg.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+const DAEMON_VERSION = readDaemonVersion();
+// Captured once at module load, not per-ping: `ping`'s uptimeMs must measure how long this
+// process has been running, not how long it's been since the last call.
+const DAEMON_STARTED_AT = Date.now();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -190,6 +215,7 @@ export async function main(): Promise<void> {
               relayClient?.sendEvent(command.sessionId, errorEvent);
             });
           },
+          onRpcRequest: (method, params) => dispatchRpc(method, params, { version: DAEMON_VERSION, startedAt: DAEMON_STARTED_AT }),
         });
         relayClient.connect();
         console.log(`Connecting to relay at ${RELAY_URL}`);

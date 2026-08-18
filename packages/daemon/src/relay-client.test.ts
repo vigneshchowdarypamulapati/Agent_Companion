@@ -166,6 +166,103 @@ describe('RelayClient', () => {
     expect(() => client!.sendCommandAck('cmd-1', 'delivered')).not.toThrow();
   });
 
+  it('runs onRpcRequest for an inbound rpc_request and sends its result back as an rpc_response', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const connected = waitForConnection(wss);
+
+    const clientOpened = new Promise<void>((resolve) => {
+      client = new RelayClient({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 'test-token',
+        onCommand: () => {},
+        onRpcRequest: (method, params) => ({ result: { method, params } }),
+        onOpen: () => resolve(),
+      });
+    });
+    client!.connect();
+    const [serverSocket] = await Promise.all([connected, clientOpened]);
+
+    const received = waitForMessage(serverSocket);
+    serverSocket.send(JSON.stringify({ kind: 'rpc_request', requestId: 'req-1', method: 'ping', params: null }));
+
+    expect(await received).toEqual({
+      kind: 'rpc_response',
+      requestId: 'req-1',
+      result: { method: 'ping', params: null },
+    });
+  });
+
+  it('sends a typed error rpc_response when onRpcRequest resolves with an error', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const connected = waitForConnection(wss);
+
+    const clientOpened = new Promise<void>((resolve) => {
+      client = new RelayClient({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 'test-token',
+        onCommand: () => {},
+        onRpcRequest: () => ({ error: 'unknown_method' }),
+        onOpen: () => resolve(),
+      });
+    });
+    client!.connect();
+    const [serverSocket] = await Promise.all([connected, clientOpened]);
+
+    const received = waitForMessage(serverSocket);
+    serverSocket.send(JSON.stringify({ kind: 'rpc_request', requestId: 'req-1', method: 'nope', params: null }));
+
+    expect(await received).toEqual({ kind: 'rpc_response', requestId: 'req-1', error: 'unknown_method' });
+  });
+
+  it('sends a typed handler_error rpc_response instead of crashing when onRpcRequest throws', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const connected = waitForConnection(wss);
+
+    const clientOpened = new Promise<void>((resolve) => {
+      client = new RelayClient({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 'test-token',
+        onCommand: () => {},
+        onRpcRequest: () => {
+          throw new Error('boom');
+        },
+        onOpen: () => resolve(),
+      });
+    });
+    client!.connect();
+    const [serverSocket] = await Promise.all([connected, clientOpened]);
+
+    const received = waitForMessage(serverSocket);
+    serverSocket.send(JSON.stringify({ kind: 'rpc_request', requestId: 'req-1', method: 'ping', params: null }));
+
+    expect(await received).toEqual({ kind: 'rpc_response', requestId: 'req-1', error: 'handler_error' });
+  });
+
+  it('defaults to a typed unknown_method rpc_response when no onRpcRequest is wired in', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const connected = waitForConnection(wss);
+
+    const clientOpened = new Promise<void>((resolve) => {
+      client = new RelayClient({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 'test-token',
+        onCommand: () => {},
+        onOpen: () => resolve(),
+      });
+    });
+    client!.connect();
+    const [serverSocket] = await Promise.all([connected, clientOpened]);
+
+    const received = waitForMessage(serverSocket);
+    serverSocket.send(JSON.stringify({ kind: 'rpc_request', requestId: 'req-1', method: 'ping', params: null }));
+
+    expect(await received).toEqual({ kind: 'rpc_response', requestId: 'req-1', error: 'unknown_method' });
+  });
+
   it('does not throw when sendEvent is called before the socket is open', async () => {
     const fake = await startFakeRelay();
     wss = fake.wss;
