@@ -331,9 +331,12 @@ export class RelayConnection {
       const requestId = crypto.randomUUID();
       const timer = setTimeout(() => this.failRpc(requestId), this.rpcTimeoutMs);
       this.pendingRpcs.set(requestId, { resolve, reject, timer });
-      // `params` defaults to `null`, not left `undefined`: JSON.stringify drops an undefined-
-      // valued key entirely, which would omit `params` from the frame altogether and fail
-      // RpcRequestMessage's schema (params is required, though its value may be anything).
+      // `params` defaults to `null`, not left `undefined`. Note this is NOT for schema reasons:
+      // `params: z.unknown()` makes the key optional in zod, so a frame omitting it validates
+      // fine either way. It is so the wire shape is the same whether or not a caller passed
+      // params — a handler (and anyone reading a captured frame) sees an explicit `null` rather
+      // than having to distinguish "absent" from "present but undefined", a distinction
+      // JSON.stringify erases anyway by dropping undefined-valued keys.
       const message: BrowserToRelayMessage = { kind: 'rpc_request', requestId, method, params: params ?? null };
       this.ws.send(JSON.stringify(message));
     });

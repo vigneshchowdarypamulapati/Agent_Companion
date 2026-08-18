@@ -200,7 +200,17 @@ export class RelayClient {
     const message: DaemonToRelayMessage =
       outcome.error !== undefined
         ? { kind: 'rpc_response', requestId, error: outcome.error }
-        : { kind: 'rpc_response', requestId, result: outcome.result };
+        : // Normalized to `null` here, not only in `dispatchRpc`: this is the point where an
+          // outcome actually becomes a wire frame, and `onRpcRequest` is a documented injection
+          // seam that any caller can supply. An outcome of `{}` or `{ result: undefined }` from
+          // such a handler would otherwise serialize to a frame carrying neither `result` nor
+          // `error` (JSON.stringify drops undefined-valued keys), which fails
+          // RpcResponseMessage's "exactly one of" invariant at the relay. The relay would then
+          // reply with an error frame *to the daemon* while the browser's promise hung until its
+          // own timeout — reporting a timeout for what was really a malformed response. Enforcing
+          // the invariant where the frame is constructed makes that unrepresentable regardless of
+          // which handler produced the outcome.
+          { kind: 'rpc_response', requestId, result: outcome.result === undefined ? null : outcome.result };
     this.ws.send(JSON.stringify(message));
   }
 

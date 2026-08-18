@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ConnectionHub, type Connection, type RelayHubMessage } from './hub.js';
+import { ConnectionHub, RPC_IN_FLIGHT_CAP_PER_DEVICE, type Connection, type RelayHubMessage } from './hub.js';
 import { InMemoryStore } from './in-memory-store.js';
 import { InMemoryPubSub } from './in-memory-pubsub.js';
 import type { PushPayload, PushSendResult, PushSender } from './push-sender.js';
@@ -1455,6 +1455,128 @@ describe('ConnectionHub', () => {
     // No daemon paired to user-2, so the intruder gets a typed error, not access to user-1's daemon.
     expect(daemon.sent).toHaveLength(0);
     expect(intruder.sent).toEqual([{ kind: 'rpc_response', requestId: 'req-1', error: 'no_daemon' }]);
+  });
+
+  it('with two users who EACH have a connected daemon, a request lands only on the requester\'s own daemon', async () => {
+    // The other isolation tests give the intruder no daemon at all, so the only gate they
+    // exercise is `getDaemonDeviceForUser` returning undefined. This is the case that actually
+    // pins the targeting logic: both users have a live daemon, so a bug that picked the wrong
+    // device (or a `dispatchLocal` that stopped re-checking userId) would deliver to the wrong
+    // one instead of failing closed. For a channel whose whole premise is that session-ownership
+    // checks do not apply, that is the regression worth guarding.
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+
+    const daemonADevice = await store.createDevice({ userId: 'user-a', type: 'daemon', name: 'a-laptop', tokenHash: 'hash-a' });
+    const daemonA = fakeConnection({ deviceId: daemonADevice.id, deviceType: 'daemon', userId: 'user-a' });
+    hub.register(daemonA);
+    const browserA = fakeConnection({ deviceId: 'browser-a', deviceType: 'browser', userId: 'user-a' });
+    hub.register(browserA);
+
+    const daemonBDevice = await store.createDevice({ userId: 'user-b', type: 'daemon', name: 'b-laptop', tokenHash: 'hash-b' });
+    const daemonB = fakeConnection({ deviceId: daemonBDevice.id, deviceType: 'daemon', userId: 'user-b' });
+    hub.register(daemonB);
+    const browserB = fakeConnection({ deviceId: 'browser-b', deviceType: 'browser', userId: 'user-b' });
+    hub.register(browserB);
+
+    await hub.routeRpcRequest(browserB, 'req-b', 'ping', undefined);
+
+    // B's request reached B's daemon and nothing reached A's.
+    expect(daemonB.sent).toEqual([{ kind: 'rpc_request', requestId: 'req-b', method: 'ping', params: undefined }]);
+    expect(daemonA.sent).toHaveLength(0);
+
+    // And A's daemon cannot answer B's request even knowing its requestId.
+    await hub.routeRpcResponse(daemonA, { requestId: 'req-b', result: { hijacked: true } });
+    expect(browserB.sent.filter((m) => m.kind === 'rpc_response')).toHaveLength(0);
+
+    // B's own daemon still can — proving the response path is live, so the assertion above
+    // failed for the right reason rather than because responses were broken generally.
+    await hub.routeRpcResponse(daemonB, { requestId: 'req-b', result: { ok: true } });
+    expect(browserB.sent).toEqual([{ kind: 'rpc_response', requestId: 'req-b', result: { ok: true }, error: undefined }]);
+    expect(browserA.sent).toHaveLength(0);
+  });
+
+  it('a colliding requestId from another user does not displace an in-flight entry', async () => {
+    // pendingRpcRequests is namespaced by userId; a shared namespace would let this `set`
+    // overwrite user-a's entry, and a's own response would then be dropped as unknown.
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+
+    const daemonADevice = await store.createDevice({ userId: 'user-a', type: 'daemon', name: 'a-laptop', tokenHash: 'hash-a' });
+    const daemonA = fakeConnection({ deviceId: daemonADevice.id, deviceType: 'daemon', userId: 'user-a' });
+    hub.register(daemonA);
+    const browserA = fakeConnection({ deviceId: 'browser-a', deviceType: 'browser', userId: 'user-a' });
+    hub.register(browserA);
+
+    const daemonBDevice = await store.createDevice({ userId: 'user-b', type: 'daemon', name: 'b-laptop', tokenHash: 'hash-b' });
+    hub.register(fakeConnection({ deviceId: daemonBDevice.id, deviceType: 'daemon', userId: 'user-b' }));
+    const browserB = fakeConnection({ deviceId: 'browser-b', deviceType: 'browser', userId: 'user-b' });
+    hub.register(browserB);
+
+    await hub.routeRpcRequest(browserA, 'same-id', 'ping', undefined);
+    await hub.routeRpcRequest(browserB, 'same-id', 'ping', undefined);
+
+    await hub.routeRpcResponse(daemonA, { requestId: 'same-id', result: { forA: true } });
+
+    expect(browserA.sent).toEqual([{ kind: 'rpc_response', requestId: 'same-id', result: { forA: true }, error: undefined }]);
+    expect(browserB.sent.filter((m) => m.kind === 'rpc_response')).toHaveLength(0);
+  });
+
+  it('a completed request frees its in-flight cap slot', async () => {
+    // Without the delete in routeRpcResponse a device would be silently capped at
+    // RPC_IN_FLIGHT_CAP_PER_DEVICE requests per TTL window for its whole lifetime, and every
+    // other RPC test would still pass.
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemonDevice = await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-1' });
+    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    // Fill the cap, then settle every one of them.
+    for (let i = 0; i < RPC_IN_FLIGHT_CAP_PER_DEVICE; i += 1) {
+      await hub.routeRpcRequest(browser, `req-${i}`, 'ping', undefined);
+    }
+    for (let i = 0; i < RPC_IN_FLIGHT_CAP_PER_DEVICE; i += 1) {
+      await hub.routeRpcResponse(daemon, { requestId: `req-${i}`, result: { ok: true } });
+    }
+
+    await hub.routeRpcRequest(browser, 'req-after', 'ping', undefined);
+
+    // Forwarded to the daemon rather than rejected with in_flight_cap_exceeded.
+    expect(daemon.sent.filter((m) => m.kind === 'rpc_request' && m.requestId === 'req-after')).toHaveLength(1);
+    expect(browser.sent.filter((m) => m.kind === 'rpc_response' && m.error === 'in_flight_cap_exceeded')).toHaveLength(0);
+  });
+
+  it('unregistering a browser device\'s last connection purges its pending rpc entries and frees its cap budget', async () => {
+    // The TTL sweep is lazy — it only runs from routeRpcRequest/routeRpcResponse — so on a relay
+    // with no other RPC traffic nothing would ever collect these. Without the purge in
+    // unregister they are pinned indefinitely rather than for PENDING_RPC_REQUEST_TTL_MS.
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemonDevice = await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-1' });
+    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    for (let i = 0; i < RPC_IN_FLIGHT_CAP_PER_DEVICE; i += 1) {
+      await hub.routeRpcRequest(browser, `req-${i}`, 'ping', undefined);
+    }
+    hub.unregister(browser);
+
+    // The same device reconnects and is not throttled by the orphans it left behind.
+    const reconnected = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(reconnected);
+    await hub.routeRpcRequest(reconnected, 'req-fresh', 'ping', undefined);
+
+    expect(daemon.sent.filter((m) => m.kind === 'rpc_request' && m.requestId === 'req-fresh')).toHaveLength(1);
+    expect(reconnected.sent.filter((m) => m.kind === 'rpc_response')).toHaveLength(0);
+
+    // And the purged entries are truly gone: a late response for one finds nothing to route.
+    await hub.routeRpcResponse(daemon, { requestId: 'req-0', result: { late: true } });
+    expect(reconnected.sent.filter((m) => m.kind === 'rpc_response')).toHaveLength(0);
   });
 
   it('does not route an rpc_response for a requestId belonging to a different user back to that user\'s browser', async () => {

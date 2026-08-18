@@ -117,7 +117,7 @@ const PENDING_RPC_REQUEST_TTL_MS = 30_000;
  * user-triggered questions, not a stream), while still bounding worst-case memory per misbehaving
  * device to a small, fixed number of entries.
  */
-const RPC_IN_FLIGHT_CAP_PER_DEVICE = 20;
+export const RPC_IN_FLIGHT_CAP_PER_DEVICE = 20;
 
 export class ConnectionHub {
   /**
@@ -192,9 +192,26 @@ export class ConnectionHub {
    * timeout, so an unbounded burst is merely wasteful, not exploitable-without-bound), an RPC
    * caller that never lets a promise settle would otherwise grow this map forever within a single
    * TTL window, which the passive prune sweep alone cannot prevent. Populated in
-   * `routeRpcRequest`, consumed (and removed) in `routeRpcResponse`.
+   * `routeRpcRequest`, consumed (and removed) in `routeRpcResponse`, and purged wholesale in
+   * `unregister` when the requesting browser device's last connection closes (see there for why
+   * the TTL sweep alone is not sufficient).
+   *
+   * Keyed by `${userId}:${requestId}`, not by `requestId` alone. `requestId` is client-chosen, so
+   * a single global namespace would let one user's `set` silently overwrite another user's
+   * in-flight entry with a colliding id — the victim's own response would then fail the
+   * `pending.userId` check in `routeRpcResponse` and be dropped, turning their call into a
+   * client-side timeout. That is denial only, never disclosure (a response is still delivered
+   * solely to the device recorded in the entry, and `dispatchLocal` re-checks the userId), and it
+   * requires guessing a live UUID that is never transmitted to anyone but the relay and the
+   * owner's daemon — but namespacing the key removes the shared namespace outright rather than
+   * relying on unguessability.
    */
   private pendingRpcRequests = new Map<string, { userId: string; browserDeviceId: string; expiresAt: number }>();
+
+  /** Key for `pendingRpcRequests`. See that field's doc for why `requestId` alone is not enough. */
+  private rpcKey(userId: string, requestId: string): string {
+    return `${userId}:${requestId}`;
+  }
 
   constructor(
     private store: Store,
@@ -241,7 +258,24 @@ export class ConnectionHub {
       this.connections.delete(connection.deviceId);
       if (connection.deviceType === 'daemon') {
         this.scheduleDaemonStop(connection.deviceId, connection.userId);
+      } else {
+        // A browser device with no connections left can never receive an rpc_response, so every
+        // entry it still has pending is garbage. Purging here rather than leaving it to
+        // `pruneExpiredRpcRequests` is load-bearing, not tidiness: that sweep is lazy — it runs
+        // only from `routeRpcRequest`/`routeRpcResponse` — so with no other RPC traffic on this
+        // relay there is nothing to trigger it, and entries that the TTL says should live 30s
+        // would instead be pinned indefinitely. That is precisely the window a client that
+        // disconnects mid-flight (or a hostile one that fires requests and drops the socket) would
+        // otherwise use to grow this map without bound. It also returns the device's in-flight cap
+        // budget immediately, so a reconnecting browser isn't throttled by its own orphans.
+        this.purgePendingRpcRequestsForDevice(connection.deviceId);
       }
+    }
+  }
+
+  private purgePendingRpcRequestsForDevice(browserDeviceId: string): void {
+    for (const [key, entry] of this.pendingRpcRequests) {
+      if (entry.browserDeviceId === browserDeviceId) this.pendingRpcRequests.delete(key);
     }
   }
 
@@ -553,7 +587,7 @@ export class ConnectionHub {
     // Recorded before publishing, same reasoning as routeFromBrowser's pendingCommandAcks write:
     // routeRpcResponse must be able to find this even if the daemon's reply (routed back through
     // pubsub) arrives unexpectedly fast.
-    this.pendingRpcRequests.set(requestId, {
+    this.pendingRpcRequests.set(this.rpcKey(connection.userId, requestId), {
       userId: connection.userId,
       browserDeviceId: connection.deviceId,
       expiresAt: this.now() + PENDING_RPC_REQUEST_TTL_MS,
@@ -578,11 +612,14 @@ export class ConnectionHub {
     response: { requestId: string; result?: unknown; error?: string }
   ): Promise<void> {
     this.pruneExpiredRpcRequests();
-    const pending = this.pendingRpcRequests.get(response.requestId);
-    // The userId check is defense in depth, not the primary safeguard — see routeCommandAck's
-    // identical comment; requestIds are client-generated UUIDs, not guessable.
+    // Scoping the lookup by the responding daemon's own userId is what makes cross-user routing
+    // structurally impossible rather than merely checked: a daemon can only ever address entries
+    // inside its owner's namespace, so there is no key it could send that reaches another user's
+    // pending request. The `pending.userId` assertion below is kept as defense in depth.
+    const key = this.rpcKey(connection.userId, response.requestId);
+    const pending = this.pendingRpcRequests.get(key);
     if (!pending || pending.userId !== connection.userId) return;
-    this.pendingRpcRequests.delete(response.requestId);
+    this.pendingRpcRequests.delete(key);
     await this.pubsub.publish(CHANNEL, {
       userId: pending.userId,
       targetDeviceId: pending.browserDeviceId,
