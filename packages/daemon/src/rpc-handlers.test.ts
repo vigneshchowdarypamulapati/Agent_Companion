@@ -35,4 +35,13 @@ describe('dispatchRpc', () => {
     const outcome = await dispatchRpc('broken', undefined, { version: '1.2.3', startedAt: 0 }, rejectingRegistry);
     expect(outcome).toEqual({ error: 'handler_error' });
   });
+
+  it('normalizes an undefined handler return value to null, never an absent result', async () => {
+    const voidRegistry: Record<string, RpcHandler> = {
+      noop: () => undefined,
+    };
+    const outcome = await dispatchRpc('noop', undefined, { version: '1.2.3', startedAt: 0 }, voidRegistry);
+    expect(outcome).toEqual({ result: null });
+    expect('result' in outcome).toBe(true);
+  });
 });

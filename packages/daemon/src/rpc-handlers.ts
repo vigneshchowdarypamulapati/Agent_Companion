@@ -57,7 +57,12 @@ export async function dispatchRpc(
   if (!handler) return { error: RPC_ERROR_CODES.UNKNOWN_METHOD };
   try {
     const result = await handler(params, deps);
-    return { result };
+    // Normalized to `null` rather than left `undefined`: RpcResponseMessage's wire invariant
+    // (@companion/protocol's relay.ts) requires exactly one of `result`/`error` to be *present*,
+    // and JSON.stringify silently drops an undefined-valued key rather than serializing it — a
+    // handler that legitimately has nothing to return would otherwise produce a frame with
+    // neither field, which the relay would reject as malformed instead of routing it.
+    return { result: result === undefined ? null : result };
   } catch {
     return { error: RPC_ERROR_CODES.HANDLER_ERROR };
   }
