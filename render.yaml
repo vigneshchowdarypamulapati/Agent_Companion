@@ -1,0 +1,58 @@
+# Render blueprint for the Companion relay.
+#
+# WHY A WEB SERVICE AND NOT A SERVERLESS FUNCTION: the relay holds WebSocket connections open for
+# hours (the daemon stays connected the whole time you are working) and keeps routing state in
+# process memory — the pub/sub bus, the pending-command map, and the pending-RPC map all live in
+# the ConnectionHub. It needs a long-lived process, which is exactly what serverless platforms
+# do not provide.
+#
+# WHY EXACTLY ONE INSTANCE: that in-memory state is not shared between processes. With two
+# instances behind a load balancer, your phone can connect to instance A while your daemon is
+# connected to instance B, and they will never see each other's messages — commands vanish and
+# events never arrive, intermittently and with no error anywhere. `numInstances: 1` below is
+# load-bearing, not a cost decision. Scaling out requires replacing InMemoryPubSub with a shared
+# backend (Redis) first; see packages/relay/src/in-memory-pubsub.ts.
+services:
+  - type: web
+    name: companion-relay
+    runtime: node
+    plan: free
+    # Build from the repo root: this is an npm workspaces monorepo and the relay depends on the
+    # @companion/protocol workspace package, which must be compiled to dist/ before the relay's
+    # own build can typecheck against it. The root `build` script already orders this correctly.
+    buildCommand: npm ci && npm run build -w @companion/protocol && npm run build -w @companion/relay
+    startCommand: npm start -w @companion/relay
+    # Unauthenticated liveness endpoint (see server.ts). Every other route requires a bearer
+    # token, so pointing Render at any of them would report a permanently unhealthy service.
+    healthCheckPath: /health
+    numInstances: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render terminates TLS at its edge and forwards to this process over one proxy hop. Without
+      # this, req.ip is the proxy's address for every request, collapsing all IP-keyed rate
+      # limiters (pairing, browser registration) into a single shared bucket for the entire
+      # internet. The relay refuses to start in production without it being set explicitly —
+      # see packages/relay/src/trust-proxy.ts for why there is no safe default.
+      - key: COMPANION_RELAY_TRUST_PROXY
+        value: 1
+      # Set these in the Render dashboard, not here — they are secrets and this file is committed.
+      # sync: false makes Render prompt for them at deploy time instead of expecting a value.
+      - key: DATABASE_URL
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      # Web Push credentials. Without all three the relay starts fine but push notifications are
+      # silently disabled and GET /push/vapid-public-key returns 404, so the browser cannot even
+      # subscribe. Generate with: npm run generate:vapid
+      - key: COMPANION_RELAY_VAPID_PUBLIC_KEY
+        sync: false
+      - key: COMPANION_RELAY_VAPID_PRIVATE_KEY
+        sync: false
+      - key: COMPANION_RELAY_VAPID_SUBJECT
+        sync: false
+      # The deployed web app's exact origin, e.g. https://companion-web.vercel.app — no trailing
+      # slash, no path. Browser requests from any other origin are refused. Unset would fall back
+      # to http://localhost:5173 only, which blocks the real app.
+      - key: COMPANION_RELAY_CORS_ORIGIN
+        sync: false

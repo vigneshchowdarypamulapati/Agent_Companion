@@ -195,6 +195,27 @@ export async function createRelayServer({
     next();
   });
 
+  /**
+   * Unauthenticated liveness probe for the hosting platform (Render, Fly, etc.), which needs a
+   * cheap endpoint it can poll to decide whether this instance is up. Every other route on this
+   * relay requires a bearer token, so without this a platform health check would see 401s and
+   * conclude the service is broken.
+   *
+   * Deliberately reports only that the process is serving HTTP. It does NOT check the database:
+   * a health check that fails on a transient Neon blip would have the platform kill and restart a
+   * relay that is otherwise fine, dropping every live daemon and browser socket to no purpose —
+   * turning a brief query failure into a full connection reset for everyone. Store failures are
+   * already surfaced where they matter (routing paths return typed errors, and the daemon buffers
+   * and replays events across a disconnect), so restarting is the wrong remedy here.
+   *
+   * Returns nothing about configuration, versions, connection counts, or environment: it is
+   * reachable by anyone on the internet, so it says only what an unauthenticated caller could
+   * already learn by observing that the port answers at all.
+   */
+  app.get('/health', (_req, res) => {
+    res.status(200).json({ status: 'ok' });
+  });
+
   app.post(
     '/pairing/request-code',
     asyncHandler(async (req, res) => {

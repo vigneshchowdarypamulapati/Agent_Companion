@@ -6,6 +6,7 @@
   ],
   "scripts": {
     "test": "npm run test --workspaces --if-present",
-    "build": "npm run build -w @companion/protocol && npm run build -w @companion/relay && npm run build -w @companion/daemon && npm run build -w @companion/web"
+    "build": "npm run build -w @companion/protocol && npm run build -w @companion/relay && npm run build -w @companion/daemon && npm run build -w @companion/web",
+    "generate:vapid": "node scripts/generate-vapid.mjs"
   }
 }

@@ -1427,6 +1427,38 @@ describe('relay server', () => {
     expect(await tabBCloses).toBe(4403);
   });
 
+  // --- health check ---
+
+  it('answers GET /health with 200 and no authentication, so a platform probe can reach it', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    // No Authorization header — this is the whole point: every other route 401s without one, so
+    // a health check that required auth would tell the platform the service is broken.
+    const res = await request(httpServer).get('/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: 'ok' });
+  });
+
+  it('GET /health reveals nothing beyond liveness', async () => {
+    // Reachable by anyone on the internet, so it must not become a place where configuration,
+    // versions, or connection counts leak out as the relay grows.
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+      vapidPublicKey: 'test-public-key',
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+
+    const res = await request(httpServer).get('/health');
+    expect(Object.keys(res.body)).toEqual(['status']);
+  });
+
   // --- push notifications ---
 
   it('returns 404 for GET /push/vapid-public-key when push is not configured', async () => {

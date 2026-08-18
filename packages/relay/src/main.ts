@@ -20,7 +20,15 @@ try {
   // no .env file present — fine in production
 }
 
-const PORT = Number(process.env.COMPANION_RELAY_PORT ?? 8787);
+// `PORT` is the near-universal platform convention (Render, Railway, Fly, Heroku all inject it
+// and route external traffic to whatever port the process binds). It's accepted as a fallback so
+// the relay runs on those hosts with no relay-specific configuration at all, while
+// COMPANION_RELAY_PORT still wins when set — a deployment that deliberately pins a port should
+// not be silently overridden by the platform's injected one.
+const PORT = Number(process.env.COMPANION_RELAY_PORT ?? process.env.PORT ?? 8787);
+// Must stay 0.0.0.0 (not localhost) on every container platform: binding the loopback interface
+// makes the process unreachable from the host's proxy, which presents as a deploy that starts
+// cleanly, passes its own logs, and then fails every health check.
 const HOST = process.env.COMPANION_RELAY_HOST ?? '0.0.0.0';
 
 const DATABASE_URL = process.env.DATABASE_URL;
