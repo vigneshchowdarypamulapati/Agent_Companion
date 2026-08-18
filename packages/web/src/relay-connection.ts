@@ -489,6 +489,10 @@ export class RelayConnection {
  * sleep together, or the relay itself restarting) retries in lockstep and re-hits the relay in
  * synchronized spikes instead of a spread-out trickle.
  */
-function jitter(ms: number): number {
+// Exported solely so relay-connection.test.ts can pin Math.random() and assert this formula
+// directly, rather than sampling real draws and checking a statistical property of the output —
+// this codebase has already been bitten once by that pattern (a chi-squared test, unseeded, that
+// flaked in CI) and isn't repeating it here.
+export function jitter(ms: number): number {
   return ms / 2 + Math.random() * (ms / 2);
 }

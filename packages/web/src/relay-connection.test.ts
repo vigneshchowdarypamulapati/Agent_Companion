@@ -1,8 +1,8 @@
 // @vitest-environment node
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { WebSocketServer, WebSocket as NodeWebSocket } from 'ws';
 import type { AddressInfo } from 'node:net';
-import { RelayConnection } from './relay-connection';
+import { RelayConnection, jitter } from './relay-connection';
 import type { Command, SessionEvent } from '@companion/protocol';
 
 function startFakeRelay(): Promise<{ wss: WebSocketServer; port: number }> {
@@ -540,5 +540,57 @@ describe('RelayConnection', () => {
 
     await secondConnection;
     expect(connectionCount).toBe(2);
+  });
+});
+
+// --- jitter: equal jitter applied to the reconnect backoff ---
+//
+// Stubs Math.random() to fixed values rather than sampling real draws and checking a statistical
+// property (e.g. a chi-squared test) over many trials — see jitter's doc comment in
+// relay-connection.ts for why: this codebase already had a flaky, unseeded statistical test of
+// this shape fail in CI once and had to replace it with exactly this deterministic approach.
+describe('jitter', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns exactly ms/2 at the floor of Math.random()', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    expect(jitter(1000)).toBe(500);
+  });
+
+  it('returns exactly ms at the ceiling of Math.random()', () => {
+    // Math.random() itself never actually returns 1, but stubbing it to 1 exercises the formula's
+    // theoretical upper bound directly, which sampling real draws could only ever approach.
+    vi.spyOn(Math, 'random').mockReturnValue(1);
+    expect(jitter(1000)).toBe(1000);
+  });
+
+  it('stays within [ms/2, ms] for a fixed set of representative random draws', () => {
+    for (const r of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 0.999]) {
+      vi.spyOn(Math, 'random').mockReturnValue(r);
+      const result = jitter(2000);
+      expect(result).toBeGreaterThanOrEqual(1000);
+      expect(result).toBeLessThanOrEqual(2000);
+    }
+  });
+
+  it('is a pure function of ms and the random draw, with no hidden state across calls', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    expect(jitter(800)).toBe(jitter(800));
+  });
+
+  it('scales linearly with ms for a fixed random draw, so the stored exponential backoff curve is not itself randomized — only spread out', () => {
+    // scheduleReconnect's backoffMs doubles cleanly on its own (500 -> 1000 -> 2000 -> 4000 -> ...)
+    // and jitter is applied on top of that, once, at the moment a reconnect is scheduled. If
+    // jitter mixed in any ms-independent noise (or non-linear behavior), doubling the input
+    // wouldn't exactly double the output for the same random draw, and the underlying exponential
+    // shape would blur across scales instead of just being spread within each step.
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const steps = [500, 1000, 2000, 4000];
+    const jittered = steps.map((ms) => jitter(ms));
+    for (let i = 1; i < jittered.length; i += 1) {
+      expect(jittered[i]).toBe(jittered[i - 1] * 2);
+    }
   });
 });
