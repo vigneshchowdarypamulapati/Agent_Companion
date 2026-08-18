@@ -1,4 +1,11 @@
-import { RelayToBrowserMessage, type BrowserToRelayMessage, type Command, type SessionEvent } from '@companion/protocol';
+import {
+  RelayToBrowserMessage,
+  RPC_ERROR_CODES,
+  type BrowserToRelayMessage,
+  type Command,
+  type RpcErrorCode,
+  type SessionEvent,
+} from '@companion/protocol';
 
 /** The outcome of a command sent via `sendCommand`, reported exactly once per commandId — see
  * `onCommandAck`'s doc comment for how it's produced. */
@@ -6,6 +13,41 @@ export interface CommandAckResult {
   status: 'delivered' | 'failed';
   message?: string;
 }
+
+/**
+ * Thrown (as a rejection) by `callDaemon` for every failure mode. Callers switch on `.code`
+ * (one of RPC_ERROR_CODES) to decide what to render — `.message` is human-readable filler for a
+ * generic fallback UI, not something to parse. The wire itself never carries prose (see
+ * RpcResponseMessage in @companion/protocol's relay.ts) — `.message` is filled in locally, here,
+ * from RPC_ERROR_MESSAGES, for both wire-delivered codes and the purely-local ones
+ * (not_connected, timeout) so there's exactly one place this text lives.
+ */
+export class RpcError extends Error {
+  constructor(
+    public readonly code: RpcErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = 'RpcError';
+  }
+}
+
+/**
+ * Default human-readable text for every RpcErrorCode, used to construct the RpcError a caller of
+ * `callDaemon` actually catches. Centralized so the UI never has to duplicate this mapping itself,
+ * and so a code arriving from the wire (no_daemon, daemon_disconnected, unknown_method,
+ * in_flight_cap_exceeded, handler_error — none of which carry any text of their own) gets exactly
+ * the same treatment as one produced entirely on this side (not_connected, timeout).
+ */
+export const RPC_ERROR_MESSAGES: Record<RpcErrorCode, string> = {
+  [RPC_ERROR_CODES.NO_DAEMON]: 'No daemon is paired with this account.',
+  [RPC_ERROR_CODES.DAEMON_DISCONNECTED]: 'Your daemon is not currently connected.',
+  [RPC_ERROR_CODES.TIMEOUT]: 'No response from the daemon in time.',
+  [RPC_ERROR_CODES.UNKNOWN_METHOD]: 'This daemon does not support that request. Try reloading the page.',
+  [RPC_ERROR_CODES.IN_FLIGHT_CAP_EXCEEDED]: 'Too many pending requests — try again in a moment.',
+  [RPC_ERROR_CODES.HANDLER_ERROR]: 'The daemon failed to handle that request.',
+  [RPC_ERROR_CODES.NOT_CONNECTED]: 'Not connected to the relay.',
+};
 
 export interface RelayConnectionOptions {
   url: string;
@@ -55,6 +97,17 @@ export interface RelayConnectionOptions {
    * merely-idle-but-healthy connection is never disturbed while the tab stays foregrounded.
    */
   livenessProbeThresholdMs?: number;
+  /**
+   * How long `callDaemon` waits for an `rpc_response` before rejecting with a TIMEOUT RpcError on
+   * its own. Deliberately shorter than the relay's own PENDING_RPC_REQUEST_TTL_MS (hub.ts) — same
+   * reasoning as `commandAckTimeoutMs` vs. PENDING_COMMAND_ACK_TTL_MS: the relay-side entry is a
+   * memory-safety backstop, not the mechanism a caller's timeout UX depends on, so this has to be
+   * the one that actually fires first. Defaults to 8000ms: shorter than `commandAckTimeoutMs`'s
+   * 10000ms default, because every RPC method is expected to answer from local, already-available
+   * daemon state (see rpc-handlers.ts's `ping`) rather than wait on real work the way a command's
+   * dispatch sometimes does — there's no "still working on it" phase to leave room for.
+   */
+  rpcTimeoutMs?: number;
 }
 
 interface PendingCommand {
@@ -63,6 +116,12 @@ interface PendingCommand {
   /** False while the command is queued waiting for a socket to send over; true once it has
    * actually been transmitted at least once. Only ever transmitted once — see `flushQueue`. */
   transmitted: boolean;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface PendingRpc {
+  resolve: (value: unknown) => void;
+  reject: (err: RpcError) => void;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -87,6 +146,7 @@ export class RelayConnection {
   private readonly openConfirmMs: number;
   private readonly commandAckTimeoutMs: number;
   private readonly livenessProbeThresholdMs: number;
+  private readonly rpcTimeoutMs: number;
   private ws: WebSocket | undefined;
   private backoffMs: number;
   private closed = true;
@@ -106,6 +166,11 @@ export class RelayConnection {
    * awaiting a reply. See `sendCommand`'s doc comment for the full lifecycle.
    */
   private readonly pendingCommands = new Map<string, PendingCommand>();
+  /** Every call to `callDaemon` that hasn't yet settled — by response, timeout, or `close()`.
+   * Unlike `pendingCommands`, nothing is ever queued here while offline (see `callDaemon`'s doc
+   * comment for why an RPC — a question whose answer would be stale by the time a queued request
+   * finally went out — is not a candidate for the command queue's offline-durability treatment). */
+  private readonly pendingRpcs = new Map<string, PendingRpc>();
 
   constructor(options: RelayConnectionOptions) {
     this.url = options.url;
@@ -121,6 +186,7 @@ export class RelayConnection {
     this.openConfirmMs = options.openConfirmMs ?? 3000;
     this.commandAckTimeoutMs = options.commandAckTimeoutMs ?? 10_000;
     this.livenessProbeThresholdMs = options.livenessProbeThresholdMs ?? 15_000;
+    this.rpcTimeoutMs = options.rpcTimeoutMs ?? 8_000;
     this.backoffMs = this.initialBackoffMs;
   }
 
@@ -180,6 +246,13 @@ export class RelayConnection {
       this.onCommandAckCallback(commandId, { status: 'failed', message: 'Connection closed before the command was acknowledged' });
     }
     this.pendingCommands.clear();
+    // Every still-outstanding RPC is rejected the same way, for the same reason: `callDaemon`'s
+    // promise must always settle, no matter how this connection's lifecycle ends.
+    for (const entry of this.pendingRpcs.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(new RpcError(RPC_ERROR_CODES.NOT_CONNECTED, RPC_ERROR_MESSAGES[RPC_ERROR_CODES.NOT_CONNECTED]));
+    }
+    this.pendingRpcs.clear();
     this.ws?.close();
   }
 
@@ -235,6 +308,37 @@ export class RelayConnection {
     }
   }
 
+  /**
+   * Sends a device-scoped RPC request (see relay.ts's RpcRequestMessage doc — this is the seam
+   * for questions that aren't about any existing session, e.g. "what sessions could I adopt?")
+   * and resolves once the daemon answers, or rejects with a typed RpcError.
+   *
+   * Unlike `sendCommand`, this deliberately does NOT queue while the socket is closed: a command
+   * represents typed user input this app has promised never to lose, but an RPC is a question
+   * whose answer would already be stale by the time a connection that comes back minutes later
+   * finally sent it — so a closed socket rejects immediately with NOT_CONNECTED instead of
+   * waiting. For the same reason, a request that *was* transmitted is never retried on reconnect
+   * (mirroring `sendCommand`'s own non-retry, for the same reason `flushQueue` never touches an
+   * already-transmitted command) — its promise either resolves from a real response or rejects on
+   * `rpcTimeoutMs`, whichever comes first.
+   */
+  callDaemon(method: string, params?: unknown): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new RpcError(RPC_ERROR_CODES.NOT_CONNECTED, RPC_ERROR_MESSAGES[RPC_ERROR_CODES.NOT_CONNECTED]));
+        return;
+      }
+      const requestId = crypto.randomUUID();
+      const timer = setTimeout(() => this.failRpc(requestId), this.rpcTimeoutMs);
+      this.pendingRpcs.set(requestId, { resolve, reject, timer });
+      // `params` defaults to `null`, not left `undefined`: JSON.stringify drops an undefined-
+      // valued key entirely, which would omit `params` from the frame altogether and fail
+      // RpcRequestMessage's schema (params is required, though its value may be anything).
+      const message: BrowserToRelayMessage = { kind: 'rpc_request', requestId, method, params: params ?? null };
+      this.ws.send(JSON.stringify(message));
+    });
+  }
+
   private resolvePending(commandId: string, result: CommandAckResult): void {
     const entry = this.pendingCommands.get(commandId);
     // Not found: already resolved (timeout raced a late-arriving ack) or an ack for a commandId
@@ -257,6 +361,32 @@ export class RelayConnection {
       status: 'failed',
       message: "No response from the daemon in time — it may have already received this. Retry only if you don't see it take effect.",
     });
+  }
+
+  private resolveRpc(requestId: string, response: { result?: unknown; error?: string }): void {
+    const entry = this.pendingRpcs.get(requestId);
+    // Not found: already settled (timeout raced a late-arriving response) or a response for a
+    // requestId this connection never sent — either way, nothing to do.
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    this.pendingRpcs.delete(requestId);
+    if (response.error !== undefined) {
+      // Every producer of this field on the wire (the relay, this codebase's own daemon) only
+      // ever writes one of RPC_ERROR_CODES — see that module's doc comment — so this cast is safe
+      // in practice; RPC_ERROR_MESSAGES falls back to the raw string if it's ever wrong.
+      const code = response.error as RpcErrorCode;
+      entry.reject(new RpcError(code, RPC_ERROR_MESSAGES[code] ?? response.error));
+      return;
+    }
+    entry.resolve(response.result);
+  }
+
+  private failRpc(requestId: string): void {
+    const entry = this.pendingRpcs.get(requestId);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    this.pendingRpcs.delete(requestId);
+    entry.reject(new RpcError(RPC_ERROR_CODES.TIMEOUT, RPC_ERROR_MESSAGES[RPC_ERROR_CODES.TIMEOUT]));
   }
 
   private openSocket(): void {
@@ -315,8 +445,9 @@ export class RelayConnection {
         this.onEvent({ sessionId: parsed.sessionId, seq: parsed.seq, event: parsed.event });
       } else if (parsed.kind === 'command_ack') {
         this.resolvePending(parsed.commandId, { status: parsed.status, message: parsed.message });
+      } else if (parsed.kind === 'rpc_response') {
+        this.resolveRpc(parsed.requestId, { result: parsed.result, error: parsed.error });
       }
-      // 'rpc_response' is not yet handled — RPC is a later task.
     });
 
     ws.addEventListener('close', (closeEvent) => {

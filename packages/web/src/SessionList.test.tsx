@@ -17,6 +17,7 @@ function mockSessions(overrides: Partial<ReturnType<typeof sessionsProviderModul
     loadError: undefined,
     dismissSession,
     sendCommand: vi.fn(),
+    callDaemon: vi.fn(),
     subscribe: vi.fn(() => () => {}),
     ...overrides,
   });

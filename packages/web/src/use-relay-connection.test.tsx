@@ -10,6 +10,7 @@ function createFakeConnection() {
   const close = vi.fn();
   const connect = vi.fn();
   const checkLiveness = vi.fn();
+  const callDaemon = vi.fn().mockResolvedValue(undefined);
   let nextCommandId = 0;
   const factory = (options: RelayConnectionOptions) => {
     capturedOptions = options;
@@ -19,6 +20,7 @@ function createFakeConnection() {
       connect,
       close,
       checkLiveness,
+      callDaemon,
       sendCommand: vi.fn((sessionId: string, command: Command) => {
         sentCommands.push({ sessionId, command });
         nextCommandId += 1;
@@ -26,7 +28,7 @@ function createFakeConnection() {
       }),
     };
   };
-  return { factory, sentCommands, connect, close, checkLiveness, getOptions: () => capturedOptions! };
+  return { factory, sentCommands, connect, close, checkLiveness, callDaemon, getOptions: () => capturedOptions! };
 }
 
 function setOnline(value: boolean) {
@@ -51,7 +53,7 @@ describe('useRelayConnection', () => {
     let capturedOptions: RelayConnectionOptions | undefined;
     const factory = (options: RelayConnectionOptions) => {
       capturedOptions = options;
-      return { connect: vi.fn(), close: vi.fn(), checkLiveness: vi.fn(), sendCommand: vi.fn() };
+      return { connect: vi.fn(), close: vi.fn(), checkLiveness: vi.fn(), sendCommand: vi.fn(), callDaemon: vi.fn() };
     };
     const { result } = renderHook(() =>
       useRelayConnection({ url: 'ws://x', token: 't', onEvent: () => {}, createConnection: factory })
@@ -182,6 +184,30 @@ describe('useRelayConnection', () => {
     const ackResult = await result.current.sendCommand('sess-1', { type: 'pause', sessionId: 'sess-1' });
     expect(ackResult.status).toBe('failed');
     expect(fake.sentCommands).toEqual([]);
+  });
+
+  it('callDaemon delegates to the underlying connection and resolves with its result', async () => {
+    const fake = createFakeConnection();
+    fake.callDaemon.mockResolvedValue({ version: '1.0.0', uptimeMs: 5 });
+    const { result } = renderHook(() =>
+      useRelayConnection({ url: 'ws://x', token: 't', onEvent: () => {}, createConnection: fake.factory })
+    );
+
+    const promise = result.current.callDaemon('ping', { foo: 'bar' });
+
+    expect(fake.callDaemon).toHaveBeenCalledWith('ping', { foo: 'bar' });
+    await expect(promise).resolves.toEqual({ version: '1.0.0', uptimeMs: 5 });
+  });
+
+  it('callDaemon rejects with a typed NOT_CONNECTED RpcError without a connection (called before mount effect runs, or after unmount)', async () => {
+    const fake = createFakeConnection();
+    const { result, unmount } = renderHook(() =>
+      useRelayConnection({ url: 'ws://x', token: 't', onEvent: () => {}, createConnection: fake.factory })
+    );
+    unmount();
+
+    await expect(result.current.callDaemon('ping')).rejects.toMatchObject({ name: 'RpcError', code: 'not_connected' });
+    expect(fake.callDaemon).not.toHaveBeenCalled();
   });
 
   it('passes onLog through to the connection options', () => {

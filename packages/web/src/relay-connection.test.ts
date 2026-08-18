@@ -223,6 +223,115 @@ describe('RelayConnection', () => {
     expect(messagesByConnection[1] ?? []).toEqual([]);
   });
 
+  // --- callDaemon: promise-based device-scoped RPC ---
+
+  it('resolves callDaemon with the result the relay sends back', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const serverConnected = waitForConnection(wss);
+
+    const opened = new Promise<void>((resolve) => {
+      connection = new RelayConnection({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 't',
+        onEvent: () => {},
+        onOpen: () => resolve(),
+      });
+    });
+    connection!.connect();
+    const [serverSocket] = await Promise.all([serverConnected, opened]);
+
+    const received = new Promise<any>((resolve) => {
+      serverSocket.once('message', (data) => resolve(JSON.parse(data.toString())));
+    });
+    const resultPromise = connection!.callDaemon('ping', undefined);
+    const frame = await received;
+    expect(frame).toMatchObject({ kind: 'rpc_request', method: 'ping', params: null });
+    expect(typeof frame.requestId).toBe('string');
+
+    serverSocket.send(
+      JSON.stringify({ kind: 'rpc_response', requestId: frame.requestId, result: { version: '1.0.0', uptimeMs: 5 } })
+    );
+    await expect(resultPromise).resolves.toEqual({ version: '1.0.0', uptimeMs: 5 });
+  });
+
+  it('rejects callDaemon with a typed RpcError when the relay sends an error result', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const serverConnected = waitForConnection(wss);
+
+    const opened = new Promise<void>((resolve) => {
+      connection = new RelayConnection({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 't',
+        onEvent: () => {},
+        onOpen: () => resolve(),
+      });
+    });
+    connection!.connect();
+    const [serverSocket] = await Promise.all([serverConnected, opened]);
+
+    const received = new Promise<any>((resolve) => {
+      serverSocket.once('message', (data) => resolve(JSON.parse(data.toString())));
+    });
+    const resultPromise = connection!.callDaemon('ping');
+    const frame = await received;
+
+    serverSocket.send(JSON.stringify({ kind: 'rpc_response', requestId: frame.requestId, error: 'no_daemon' }));
+    await expect(resultPromise).rejects.toMatchObject({ name: 'RpcError', code: 'no_daemon' });
+  });
+
+  it('rejects callDaemon immediately with NOT_CONNECTED when the socket is not open, without queueing it', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    connection = new RelayConnection({ url: `ws://127.0.0.1:${fake.port}`, token: 't', onEvent: () => {} });
+    // Note: connect() deliberately not called — there is no socket yet.
+
+    await expect(connection!.callDaemon('ping')).rejects.toMatchObject({ name: 'RpcError', code: 'not_connected' });
+  });
+
+  it('rejects callDaemon with a typed TIMEOUT error after rpcTimeoutMs elapses with no response', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const serverConnected = waitForConnection(wss);
+
+    const opened = new Promise<void>((resolve) => {
+      connection = new RelayConnection({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 't',
+        onEvent: () => {},
+        onOpen: () => resolve(),
+        rpcTimeoutMs: 30,
+      });
+    });
+    connection!.connect();
+    await Promise.all([serverConnected, opened]);
+
+    await expect(connection!.callDaemon('ping')).rejects.toMatchObject({ name: 'RpcError', code: 'timeout' });
+  });
+
+  it('rejects every still-pending callDaemon call when close() is called', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+    const serverConnected = waitForConnection(wss);
+
+    const opened = new Promise<void>((resolve) => {
+      connection = new RelayConnection({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 't',
+        onEvent: () => {},
+        onOpen: () => resolve(),
+      });
+    });
+    connection!.connect();
+    await Promise.all([serverConnected, opened]);
+
+    const pending = connection!.callDaemon('ping');
+    connection!.close();
+
+    await expect(pending).rejects.toMatchObject({ name: 'RpcError', code: 'not_connected' });
+  });
+
   it('calls onClose when the connection drops', async () => {
     const fake = await startFakeRelay();
     wss = fake.wss;

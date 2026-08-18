@@ -20,6 +20,7 @@ describe('SessionsProvider', () => {
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connectionState: 'live' as const,
       sendCommand: vi.fn(),
+      callDaemon: vi.fn(),
     });
 
     render(

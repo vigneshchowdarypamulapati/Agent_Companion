@@ -11,15 +11,17 @@ function mockUseRelayConnection() {
   let capturedOnUnauthorized: (() => void) | undefined;
   let stateValue: useRelayConnectionModule.ConnectionState = 'live';
   const sendCommand = vi.fn();
+  const callDaemon = vi.fn();
   vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockImplementation((options) => {
     capturedOnEvent = options.onEvent;
     capturedOnUnauthorized = options.onUnauthorized;
-    return { connectionState: stateValue, sendCommand };
+    return { connectionState: stateValue, sendCommand, callDaemon };
   });
   return {
     emit: (message: LiveEvent) => capturedOnEvent?.(message),
     emitUnauthorized: () => capturedOnUnauthorized?.(),
     sendCommand,
+    callDaemon,
     setConnected: (value: boolean) => {
       stateValue = value ? 'live' : 'reconnecting';
     },

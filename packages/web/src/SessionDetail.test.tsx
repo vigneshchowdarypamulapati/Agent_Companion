@@ -30,6 +30,7 @@ function mockSessions(overrides: Partial<ReturnType<typeof sessionsProviderModul
     loadError: undefined,
     dismissSession: vi.fn(),
     sendCommand,
+    callDaemon: vi.fn(),
     subscribe,
     ...overrides,
   });
@@ -271,6 +272,7 @@ describe('SessionDetail', () => {
         loadError: undefined,
         dismissSession: vi.fn(),
         sendCommand: vi.fn(),
+        callDaemon: vi.fn(),
         subscribe: vi.fn(() => () => {}),
       });
       return (

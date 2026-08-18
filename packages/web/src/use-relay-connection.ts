@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { RPC_ERROR_CODES } from '@companion/protocol';
 import type { Command, SessionEvent } from '@companion/protocol';
-import { RelayConnection, type CommandAckResult, type RelayConnectionOptions } from './relay-connection';
+import {
+  RelayConnection,
+  RpcError,
+  RPC_ERROR_MESSAGES,
+  type CommandAckResult,
+  type RelayConnectionOptions,
+} from './relay-connection';
 
 export interface LiveEvent {
   sessionId: string;
@@ -48,7 +55,7 @@ export interface UseRelayConnectionOptions {
    */
   createConnection?: (
     options: RelayConnectionOptions
-  ) => Pick<RelayConnection, 'connect' | 'close' | 'sendCommand' | 'checkLiveness'>;
+  ) => Pick<RelayConnection, 'connect' | 'close' | 'sendCommand' | 'checkLiveness' | 'callDaemon'>;
 }
 
 export interface UseRelayConnectionResult {
@@ -62,6 +69,14 @@ export interface UseRelayConnectionResult {
    * guarantees exactly one onCommandAck call per commandId no matter how it resolves.
    */
   sendCommand: (sessionId: string, command: Command) => Promise<CommandAckResult>;
+  /**
+   * Sibling of `sendCommand`, but for the device-scoped RPC channel (see relay-connection.ts's
+   * `callDaemon` doc comment) — a question that isn't about any existing session, e.g. "what
+   * sessions could I adopt?" (Project 3). Resolves with the daemon's result or rejects with a
+   * typed RpcError; unlike `sendCommand` this can genuinely reject, since there's no equivalent
+   * of a resolved-but-failed CommandAckResult for a request that never went anywhere.
+   */
+  callDaemon: (method: string, params?: unknown) => Promise<unknown>;
 }
 
 export function useRelayConnection(options: UseRelayConnectionOptions): UseRelayConnectionResult {
@@ -81,7 +96,7 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
   // render pass.
   const hasConnectedOnceRef = useRef(false);
   const connectionRef = useRef<
-    Pick<RelayConnection, 'connect' | 'close' | 'sendCommand' | 'checkLiveness'> | undefined
+    Pick<RelayConnection, 'connect' | 'close' | 'sendCommand' | 'checkLiveness' | 'callDaemon'> | undefined
   >(undefined);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
@@ -173,5 +188,19 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
     });
   }, []);
 
-  return { connectionState, sendCommand };
+  const callDaemon = useCallback((method: string, params?: unknown): Promise<unknown> => {
+    const connection = connectionRef.current;
+    if (!connection) {
+      // No connection object exists at all (called before mount or after unmount) — nothing will
+      // ever settle this, so reject immediately rather than hanging forever. Mirrors sendCommand's
+      // identical "no connection" case above, but rejects (not resolves) since RpcError is how
+      // every callDaemon failure is reported — see that class's doc comment.
+      return Promise.reject(
+        new RpcError(RPC_ERROR_CODES.NOT_CONNECTED, RPC_ERROR_MESSAGES[RPC_ERROR_CODES.NOT_CONNECTED])
+      );
+    }
+    return connection.callDaemon(method, params);
+  }, []);
+
+  return { connectionState, sendCommand, callDaemon };
 }

@@ -42,6 +42,7 @@ describe('App', () => {
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connectionState: 'live' as const,
       sendCommand: vi.fn(),
+      callDaemon: vi.fn(),
     });
 
     render(<App />);
@@ -57,6 +58,7 @@ describe('App', () => {
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connectionState: 'live' as const,
       sendCommand: vi.fn(),
+      callDaemon: vi.fn(),
     });
 
     render(<App />);
@@ -71,6 +73,7 @@ describe('App', () => {
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connectionState: 'live' as const,
       sendCommand: vi.fn(),
+      callDaemon: vi.fn(),
     });
     window.history.pushState({}, '', '/some/unknown/path');
 
@@ -85,6 +88,7 @@ describe('App', () => {
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connectionState: 'live' as const,
       sendCommand: vi.fn(),
+      callDaemon: vi.fn(),
     });
     vi.spyOn(devicesApi, 'getDevice').mockResolvedValue({
       id: 'dev-1',

@@ -39,6 +39,9 @@ export interface UseSessionsStoreResult {
   loadError: string | undefined;
   dismissSession: (sessionId: string) => Promise<void>;
   sendCommand: (sessionId: string, command: Command) => Promise<CommandAckResult>;
+  /** The device-scoped RPC channel — see use-relay-connection.ts's UseRelayConnectionResult.
+   * Not consumed by any UI component yet; this is a seam for Project 3 (session adoption). */
+  callDaemon: (method: string, params?: unknown) => Promise<unknown>;
   subscribe: (sessionId: string, handler: (message: LiveEvent) => void) => () => void;
 }
 
@@ -159,7 +162,7 @@ export function useSessionsStore(token: string, onUnauthorized: () => void): Use
     };
   }, [loadSessions]);
 
-  const { connectionState, sendCommand } = useRelayConnection({
+  const { connectionState, sendCommand, callDaemon } = useRelayConnection({
     url: RELAY_WS_URL,
     token,
     onEvent: handleLiveEvent,
@@ -212,5 +215,5 @@ export function useSessionsStore(token: string, onUnauthorized: () => void): Use
     };
   }, []);
 
-  return { sessions, loaded, connectionState, loadError, dismissSession: dismissSessionFn, sendCommand, subscribe };
+  return { sessions, loaded, connectionState, loadError, dismissSession: dismissSessionFn, sendCommand, callDaemon, subscribe };
 }
