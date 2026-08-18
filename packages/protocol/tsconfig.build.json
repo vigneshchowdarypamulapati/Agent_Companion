@@ -1,0 +1,10 @@
+{
+  // Production build config. `tsconfig.json` deliberately includes test files so the editor and
+  // `npm run typecheck` type-check them; this variant strips them back out for the build, because
+  // compiling tests into dist/ is wrong twice over: it ships test code as part of the published
+  // artifact, and it makes the production build depend on vitest being installed. A host that
+  // sets NODE_ENV=production (so npm omits devDependencies) then fails to build at all — which is
+  // exactly how this was found.
+  "extends": "./tsconfig.json",
+  "exclude": ["src/**/*.test.ts"]
+}

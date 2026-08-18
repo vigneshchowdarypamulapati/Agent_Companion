@@ -1,0 +1,5 @@
+{
+  // See packages/protocol/tsconfig.build.json for why this exists.
+  "extends": "./tsconfig.json",
+  "exclude": ["src/**/*.test.ts"]
+}

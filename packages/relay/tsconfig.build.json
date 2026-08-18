@@ -1,0 +1,15 @@
+{
+  // See packages/protocol/tsconfig.build.json for why this exists.
+  //
+  // `store-contract-tests.ts` is excluded alongside the *.test.ts files even though its name does
+  // not match that pattern: it is the shared Store contract suite (imported by both the in-memory
+  // and Postgres store tests) and it imports vitest at module scope, so leaving it in would keep
+  // the production build coupled to test tooling despite every other test file being gone.
+  "extends": "./tsconfig.json",
+  // `test-db-guard.ts` is likewise test-only despite its name not matching *.test.ts — it is the
+  // safety check that refuses to run the Postgres suite against a non-test database, imported
+  // only by postgres-store.test.ts and its own test. It contains no vitest import, so it would
+  // compile happily; it is excluded because shipping it in dist/ is simply wrong, not because it
+  // breaks the build.
+  "exclude": ["src/**/*.test.ts", "src/store-contract-tests.ts", "src/test-db-guard.ts"]
+}
