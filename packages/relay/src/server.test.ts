@@ -184,6 +184,89 @@ describe('relay server', () => {
     expect(await browserReceivedAck).toEqual({ kind: 'command_ack', commandId: 'cmd-1', status: 'delivered' });
   });
 
+  it('routes an rpc_request from a browser to its daemon, and the rpc_response back to that browser', async () => {
+    const store = new InMemoryStore();
+    const pubsub = new InMemoryPubSub();
+    httpServer = await createRelayServer({ store, pubsub, identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'laptop');
+
+    const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
+    const browserWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${browserToken}`);
+    sockets.push(daemonWs, browserWs);
+    await Promise.all([waitForOpen(daemonWs), waitForOpen(browserWs)]);
+
+    const daemonReceived = waitForMessage(daemonWs);
+    browserWs.send(JSON.stringify({ kind: 'rpc_request', requestId: 'req-1', method: 'ping', params: null }));
+    const forwardedRequest = await daemonReceived;
+    expect(forwardedRequest).toMatchObject({ kind: 'rpc_request', requestId: 'req-1', method: 'ping' });
+
+    const browserReceived = waitForMessage(browserWs);
+    daemonWs.send(JSON.stringify({ kind: 'rpc_response', requestId: 'req-1', result: { version: '0.1.0', uptimeMs: 5 } }));
+    expect(await browserReceived).toEqual({
+      kind: 'rpc_response',
+      requestId: 'req-1',
+      result: { version: '0.1.0', uptimeMs: 5 },
+    });
+  });
+
+  it("replies with a typed no_daemon rpc_response when the browser's account has no paired daemon", async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const browserToken = await registerBrowser(httpServer, 'phone');
+    const browserWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${browserToken}`);
+    sockets.push(browserWs);
+    await waitForOpen(browserWs);
+
+    const received = waitForMessage(browserWs);
+    browserWs.send(JSON.stringify({ kind: 'rpc_request', requestId: 'req-1', method: 'ping', params: null }));
+    expect(await received).toEqual({ kind: 'rpc_response', requestId: 'req-1', error: 'no_daemon' });
+  });
+
+  it("does not let one user's browser address another user's daemon via rpc_request", async () => {
+    const store = new InMemoryStore();
+    const pubsub = new InMemoryPubSub();
+    httpServer = await createRelayServer({ store, pubsub, identityVerifier: makeIdentityVerifier() });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+
+    const ownerBrowserToken = await registerBrowser(httpServer, 'phone', FAKE_CLERK_TOKEN);
+    const daemonToken = await pairDaemon(httpServer, ownerBrowserToken, 'laptop');
+    const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
+    sockets.push(daemonWs);
+    await waitForOpen(daemonWs);
+
+    const intruderBrowserToken = await registerBrowser(httpServer, 'intruder-phone', OTHER_FAKE_CLERK_TOKEN);
+    const intruderWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${intruderBrowserToken}`);
+    sockets.push(intruderWs);
+    await waitForOpen(intruderWs);
+
+    const daemonReceivedAnything = waitForMessage(daemonWs);
+    const intruderReceived = waitForMessage(intruderWs);
+    intruderWs.send(JSON.stringify({ kind: 'rpc_request', requestId: 'req-1', method: 'ping', params: null }));
+
+    expect(await intruderReceived).toEqual({ kind: 'rpc_response', requestId: 'req-1', error: 'no_daemon' });
+    // The other user's daemon never sees the intruder's request at all.
+    daemonWs.send(
+      JSON.stringify({
+        kind: 'event',
+        sessionId: 'sess-1',
+        deliverySeq: 1,
+        event: { type: 'session_started', sessionId: 'sess-1', projectPath: '/tmp/project', at: Date.now() },
+      })
+    );
+    await expect(daemonReceivedAnything).resolves.toEqual({ kind: 'event_ack', deliverySeq: 1 });
+  });
+
   it('rejects a WS connection with an invalid token', async () => {
     httpServer = await createRelayServer({
       store: new InMemoryStore(),

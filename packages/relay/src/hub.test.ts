@@ -1400,4 +1400,151 @@ describe('ConnectionHub', () => {
 
     expect(browser.sent.filter((m) => m.kind === 'command_ack')).toHaveLength(0);
   });
+
+  // --- rpc_request / rpc_response: the device-scoped RPC channel ---
+
+  it('routes an rpc_request from a browser to that user\'s daemon, and the response back to the originating browser', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemonDevice = await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-1' });
+    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    await hub.routeRpcRequest(browser, 'req-1', 'ping', undefined);
+
+    expect(daemon.sent).toEqual([{ kind: 'rpc_request', requestId: 'req-1', method: 'ping', params: undefined }]);
+
+    await hub.routeRpcResponse(daemon, { requestId: 'req-1', result: { version: '0.1.0', uptimeMs: 42 } });
+
+    expect(browser.sent).toEqual([
+      { kind: 'rpc_response', requestId: 'req-1', result: { version: '0.1.0', uptimeMs: 42 }, error: undefined },
+    ]);
+  });
+
+  it('routes an rpc_response only to the originating browser device, not other tabs of the same user', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemonDevice = await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-1' });
+    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const sender = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(sender);
+    const otherTab = fakeConnection({ deviceId: 'browser-2', deviceType: 'browser', userId: 'user-1' });
+    hub.register(otherTab);
+
+    await hub.routeRpcRequest(sender, 'req-1', 'ping', undefined);
+    await hub.routeRpcResponse(daemon, { requestId: 'req-1', result: { ok: true } });
+
+    expect(sender.sent.filter((m) => m.kind === 'rpc_response')).toHaveLength(1);
+    expect(otherTab.sent.filter((m) => m.kind === 'rpc_response')).toHaveLength(0);
+  });
+
+  it('another user\'s browser cannot address this daemon: rpc_request is routed only to the requester\'s own daemon', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemonDevice = await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-1' });
+    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const intruder = fakeConnection({ deviceId: 'browser-x', deviceType: 'browser', userId: 'user-2' });
+    hub.register(intruder);
+
+    await hub.routeRpcRequest(intruder, 'req-1', 'ping', undefined);
+
+    // No daemon paired to user-2, so the intruder gets a typed error, not access to user-1's daemon.
+    expect(daemon.sent).toHaveLength(0);
+    expect(intruder.sent).toEqual([{ kind: 'rpc_response', requestId: 'req-1', error: 'no_daemon' }]);
+  });
+
+  it('does not route an rpc_response for a requestId belonging to a different user back to that user\'s browser', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemonDevice = await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-1' });
+    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    await hub.routeRpcRequest(browser, 'req-1', 'ping', undefined);
+
+    const intruderDaemon = fakeConnection({ deviceId: 'daemon-x', deviceType: 'daemon', userId: 'user-2' });
+    await hub.routeRpcResponse(intruderDaemon, { requestId: 'req-1', result: { hijacked: true } });
+
+    expect(browser.sent.filter((m) => m.kind === 'rpc_response')).toHaveLength(0);
+  });
+
+  it('returns a typed no_daemon error when the user has never paired a daemon', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    await hub.routeRpcRequest(browser, 'req-1', 'ping', undefined);
+
+    expect(browser.sent).toEqual([{ kind: 'rpc_response', requestId: 'req-1', error: 'no_daemon' }]);
+  });
+
+  it('returns a typed daemon_disconnected error when the user has a paired daemon that is not currently connected', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-1' });
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    await hub.routeRpcRequest(browser, 'req-1', 'ping', undefined);
+
+    expect(browser.sent).toEqual([{ kind: 'rpc_response', requestId: 'req-1', error: 'daemon_disconnected' }]);
+  });
+
+  it('rejects a new rpc_request with a typed error once a browser device has RPC_IN_FLIGHT_CAP_PER_DEVICE requests outstanding', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemonDevice = await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-1' });
+    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    for (let i = 0; i < 20; i++) {
+      await hub.routeRpcRequest(browser, `req-${i}`, 'ping', undefined);
+    }
+    expect(daemon.sent).toHaveLength(20);
+
+    await hub.routeRpcRequest(browser, 'req-overflow', 'ping', undefined);
+
+    expect(daemon.sent).toHaveLength(20); // never forwarded to the daemon
+    expect(browser.sent.filter((m) => m.kind === 'rpc_response')).toEqual([
+      { kind: 'rpc_response', requestId: 'req-overflow', error: 'in_flight_cap_exceeded' },
+    ]);
+  });
+
+  it('silently ignores an rpc_response for an unknown or already-routed requestId', async () => {
+    const store = new InMemoryStore();
+    const hub = await startedHub(store);
+    const daemon = fakeConnection({ deviceId: 'daemon-1', deviceType: 'daemon', userId: 'user-1' });
+
+    await expect(
+      hub.routeRpcResponse(daemon, { requestId: 'does-not-exist', result: { ok: true } })
+    ).resolves.toBeUndefined();
+  });
+
+  it('prunes an expired pendingRpcRequests entry so a very late rpc_response is not routed', async () => {
+    const store = new InMemoryStore();
+    let now = 1000;
+    const hub = new ConnectionHub(store, new InMemoryPubSub(), undefined, () => now);
+    await hub.start();
+    const daemonDevice = await store.createDevice({ userId: 'user-1', type: 'daemon', name: 'laptop', tokenHash: 'hash-1' });
+    const daemon = fakeConnection({ deviceId: daemonDevice.id, deviceType: 'daemon', userId: 'user-1' });
+    hub.register(daemon);
+    const browser = fakeConnection({ deviceId: 'browser-1', deviceType: 'browser', userId: 'user-1' });
+    hub.register(browser);
+
+    await hub.routeRpcRequest(browser, 'req-1', 'ping', undefined);
+
+    now += 30_001; // past PENDING_RPC_REQUEST_TTL_MS
+    await hub.routeRpcResponse(daemon, { requestId: 'req-1', result: { ok: true } });
+
+    expect(browser.sent.filter((m) => m.kind === 'rpc_response')).toHaveLength(0);
+  });
 });

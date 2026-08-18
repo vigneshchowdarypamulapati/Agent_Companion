@@ -1,4 +1,4 @@
-import { PushSubscriptionPayload } from '@companion/protocol';
+import { PushSubscriptionPayload, RPC_ERROR_CODES } from '@companion/protocol';
 import type {
   Command,
   CommandAckMessage,
@@ -24,19 +24,24 @@ export interface Connection {
  * in @companion/protocol. It's not itself a wire message in one direction — `dispatchLocal`
  * fans an 'event' out to every browser connection (the same shape as RelayToBrowserMessage's
  * `event` variant), routes a 'command' to the one daemon connection that owns the session
- * (the same shape as RelayToDaemonMessage's `command` variant), and routes a 'command_ack' back
+ * (the same shape as RelayToDaemonMessage's `command` variant), routes a 'command_ack' back
  * to the one browser connection that sent the original command (the same shape as
- * RelayToBrowserMessage's `command_ack` variant) — so no single directional union describes this
+ * RelayToBrowserMessage's `command_ack` variant), routes an 'rpc_request' to a user's daemon
+ * device (the same shape in both RelayToDaemonMessage and BrowserToRelayMessage, since it's
+ * forwarded unchanged — see RpcRequestMessage in relay.ts), and routes an 'rpc_response' back to
+ * the one browser device that sent the originating request (likewise identical in both
+ * DaemonToRelayMessage and RelayToBrowserMessage) — so no single directional union describes this
  * type on its own. Rather than hand-duplicating those field lists, they're derived from the
  * protocol types with `Extract` — this stays in sync automatically if any variant's shape
- * changes, without coupling RelayHubMessage to the unrelated variants (rpc_request,
- * rpc_response) that appear in those unions but never flow through the hub's internal envelope.
+ * changes.
  */
 export type RelayHubMessage =
   | Extract<RelayToBrowserMessage, { kind: 'event' }>
   | Extract<RelayToBrowserMessage, { kind: 'command_ack' }>
   | Extract<RelayToDaemonMessage, { kind: 'command' }>
-  | Extract<RelayToDaemonMessage, { kind: 'event_ack' }>;
+  | Extract<RelayToDaemonMessage, { kind: 'event_ack' }>
+  | Extract<RelayToDaemonMessage, { kind: 'rpc_request' }>
+  | Extract<RelayToBrowserMessage, { kind: 'rpc_response' }>;
 
 interface PubSubEnvelope {
   userId: string;
@@ -88,6 +93,31 @@ const DEFAULT_DAEMON_DISCONNECT_GRACE_MS = 30_000;
  * failure/retry UX depends on.
  */
 const PENDING_COMMAND_ACK_TTL_MS = 60_000;
+
+/**
+ * Upper bound on how long a `pendingRpcRequests` entry (see that field's doc) is kept around
+ * waiting for an `rpc_response` that may never come. Like `PENDING_COMMAND_ACK_TTL_MS`, this is
+ * deliberately longer than the browser's own RPC timeout (`rpcTimeoutMs` in web's
+ * relay-connection.ts) so a slow-but-genuine response is never dropped here first — it exists
+ * purely as a memory-leak backstop for a request whose response never arrives at all (daemon
+ * crashes mid-handler, relay restarts), not as the mechanism a caller's timeout UX depends on.
+ * Shorter than PENDING_COMMAND_ACK_TTL_MS's 60s: a command's ack can legitimately wait on a
+ * daemon that's mid-dispatch of real work, but every registered RPC method is expected to answer
+ * from local, already-available state (see rpc-handlers.ts's `ping`) — there is no equivalent
+ * "still working on it" phase to accommodate.
+ */
+const PENDING_RPC_REQUEST_TTL_MS = 30_000;
+
+/**
+ * Upper bound on how many `rpc_request`s a single browser device may have simultaneously awaiting
+ * a response. Without this, a client that keeps calling `callDaemon` and never lets any of those
+ * promises settle (a bug, or a deliberately hostile client) would grow `pendingRpcRequests`
+ * without bound — the TTL above only reclaims entries over time, not within a single burst. 20 is
+ * comfortably above anything a legitimate UI does today (RPC calls are one-at-a-time,
+ * user-triggered questions, not a stream), while still bounding worst-case memory per misbehaving
+ * device to a small, fixed number of entries.
+ */
+const RPC_IN_FLIGHT_CAP_PER_DEVICE = 20;
 
 export class ConnectionHub {
   /**
@@ -153,6 +183,18 @@ export class ConnectionHub {
    * whether this entry is ever cleaned up, so nothing user-visible depends on the sweep.
    */
   private pendingCommandAcks = new Map<string, { userId: string; browserDeviceId: string; expiresAt: number }>();
+
+  /**
+   * Correlates a browser-originated `requestId` back to the browser device that must receive the
+   * eventual `rpc_response` — same role as `pendingCommandAcks`, for RPC instead of commands. Also
+   * doubles as the per-device in-flight count enforced by `RPC_IN_FLIGHT_CAP_PER_DEVICE`: unlike
+   * commands (which the sender is guaranteed to eventually hear back about via its own client-side
+   * timeout, so an unbounded burst is merely wasteful, not exploitable-without-bound), an RPC
+   * caller that never lets a promise settle would otherwise grow this map forever within a single
+   * TTL window, which the passive prune sweep alone cannot prevent. Populated in
+   * `routeRpcRequest`, consumed (and removed) in `routeRpcResponse`.
+   */
+  private pendingRpcRequests = new Map<string, { userId: string; browserDeviceId: string; expiresAt: number }>();
 
   constructor(
     private store: Store,
@@ -477,6 +519,98 @@ export class ConnectionHub {
     for (const [commandId, entry] of this.pendingCommandAcks) {
       if (entry.expiresAt <= now) this.pendingCommandAcks.delete(commandId);
     }
+  }
+
+  /**
+   * Routes a device-scoped `rpc_request` (see relay.ts's RpcRequestMessage doc — this is the seam
+   * for questions that aren't about any existing session, e.g. "what sessions could I adopt?")
+   * from a browser to that same user's daemon. Unlike `routeFromBrowser`, the "no route to a live
+   * daemon" cases are not thrown: they're expected, common outcomes (no daemon ever paired, or
+   * paired but not currently connected) that the UI needs to render as a real explanation, not a
+   * generic diagnostic frame — so each is answered directly and immediately with a typed
+   * `rpc_response` on `connection` itself, exactly the reply the caller would eventually have
+   * gotten anyway, without the round trip through pubsub or the TTL sweep. Only a genuinely
+   * unexpected failure (e.g. the store throwing) is left to propagate, same as every other routing
+   * method here.
+   */
+  async routeRpcRequest(connection: Connection, requestId: string, method: string, params: unknown): Promise<void> {
+    this.pruneExpiredRpcRequests();
+
+    const daemon = await this.store.getDaemonDeviceForUser(connection.userId);
+    if (!daemon) {
+      connection.send({ kind: 'rpc_response', requestId, error: RPC_ERROR_CODES.NO_DAEMON });
+      return;
+    }
+    if (!this.isDeviceConnected(daemon.id)) {
+      connection.send({ kind: 'rpc_response', requestId, error: RPC_ERROR_CODES.DAEMON_DISCONNECTED });
+      return;
+    }
+    if (this.countPendingRpcRequestsFor(connection.deviceId) >= RPC_IN_FLIGHT_CAP_PER_DEVICE) {
+      connection.send({ kind: 'rpc_response', requestId, error: RPC_ERROR_CODES.IN_FLIGHT_CAP_EXCEEDED });
+      return;
+    }
+
+    // Recorded before publishing, same reasoning as routeFromBrowser's pendingCommandAcks write:
+    // routeRpcResponse must be able to find this even if the daemon's reply (routed back through
+    // pubsub) arrives unexpectedly fast.
+    this.pendingRpcRequests.set(requestId, {
+      userId: connection.userId,
+      browserDeviceId: connection.deviceId,
+      expiresAt: this.now() + PENDING_RPC_REQUEST_TTL_MS,
+    });
+    await this.pubsub.publish(CHANNEL, {
+      userId: connection.userId,
+      targetDeviceId: daemon.id,
+      message: { kind: 'rpc_request', requestId, method, params },
+    } satisfies PubSubEnvelope);
+  }
+
+  /**
+   * Routes a daemon's `rpc_response` back to the one browser device that sent the originating
+   * `rpc_request`, using the correlation recorded in `routeRpcRequest` — the mirror of
+   * `routeCommandAck` for RPC. An unknown `requestId` (already routed once, expired, or never
+   * recorded because this relay process restarted) is silently ignored: whoever was waiting on it
+   * either already got an answer or has already given up via its own client-side timeout, exactly
+   * as `routeCommandAck`'s doc comment explains for commands.
+   */
+  async routeRpcResponse(
+    connection: Connection,
+    response: { requestId: string; result?: unknown; error?: string }
+  ): Promise<void> {
+    this.pruneExpiredRpcRequests();
+    const pending = this.pendingRpcRequests.get(response.requestId);
+    // The userId check is defense in depth, not the primary safeguard — see routeCommandAck's
+    // identical comment; requestIds are client-generated UUIDs, not guessable.
+    if (!pending || pending.userId !== connection.userId) return;
+    this.pendingRpcRequests.delete(response.requestId);
+    await this.pubsub.publish(CHANNEL, {
+      userId: pending.userId,
+      targetDeviceId: pending.browserDeviceId,
+      message: { kind: 'rpc_response', requestId: response.requestId, result: response.result, error: response.error },
+    } satisfies PubSubEnvelope);
+  }
+
+  private pruneExpiredRpcRequests(): void {
+    const now = this.now();
+    for (const [requestId, entry] of this.pendingRpcRequests) {
+      if (entry.expiresAt <= now) this.pendingRpcRequests.delete(requestId);
+    }
+  }
+
+  private countPendingRpcRequestsFor(browserDeviceId: string): number {
+    let count = 0;
+    for (const entry of this.pendingRpcRequests.values()) {
+      if (entry.browserDeviceId === browserDeviceId) count += 1;
+    }
+    return count;
+  }
+
+  /** Whether any live connection is currently registered for `deviceId` — used to distinguish "no
+   * daemon paired at all" (NO_DAEMON) from "paired, but not connected right now"
+   * (DAEMON_DISCONNECTED) in `routeRpcRequest`. */
+  private isDeviceConnected(deviceId: string): boolean {
+    const set = this.connections.get(deviceId);
+    return set !== undefined && set.size > 0;
   }
 
   /**

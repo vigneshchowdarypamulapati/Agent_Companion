@@ -544,14 +544,16 @@ export async function createRelayServer({
                   await hub.routeFromDaemon(connection, parsed.sessionId, parsed.event, parsed.deliverySeq);
                 } else if (parsed.kind === 'command_ack') {
                   await hub.routeCommandAck(connection, parsed);
+                } else if (parsed.kind === 'rpc_response') {
+                  await hub.routeRpcResponse(connection, parsed);
                 }
-                // 'rpc_response' is validated but not yet routed anywhere — RPC is a later task.
               } else {
                 const parsed = BrowserToRelayMessage.parse(rawFrame);
                 if (parsed.kind === 'command') {
                   await hub.routeFromBrowser(connection, parsed.sessionId, parsed.commandId, parsed.command);
+                } else if (parsed.kind === 'rpc_request') {
+                  await hub.routeRpcRequest(connection, parsed.requestId, parsed.method, parsed.params);
                 }
-                // 'rpc_request' is validated but not yet routed anywhere — RPC is a later task.
               }
             } catch (err) {
               // Diagnostic frame — deliberately not part of any of the directional wire-protocol schemas.
