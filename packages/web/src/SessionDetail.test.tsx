@@ -240,16 +240,32 @@ describe('SessionDetail', () => {
     await waitFor(() => expect(onUnauthorized).toHaveBeenCalledOnce());
   });
 
-  it('shows a distinct error state when the history load fails', async () => {
+  it('shows a distinct error state when the history load fails while online', async () => {
     vi.spyOn(sessionsApi, 'getSessionEvents').mockRejectedValue(
       new Error('Failed to fetch session events: HTTP 500')
     );
+    // connectionState defaults to 'live' in mockSessions() — a genuine relay failure while the
+    // device is online must still surface clearly, not be swallowed by the offline suppression.
     mockSessions();
 
     renderDetail();
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Failed to fetch session events: HTTP 500');
+  });
+
+  it('does not blame the relay for a failed fetch caused by the device itself being offline', async () => {
+    // A device going offline mid-fetch makes `fetch` throw TypeError: Failed to fetch — a
+    // fetch-layer artifact, not a relay diagnosis. When connectionState is 'offline' (the honest,
+    // navigator.onLine-sourced signal the badge below already reports), the banner must not render
+    // "Couldn't reach the relay: Failed to fetch" and contradict the badge.
+    vi.spyOn(sessionsApi, 'getSessionEvents').mockRejectedValue(new TypeError('Failed to fetch'));
+    mockSessions({ connectionState: 'offline' as const });
+
+    renderDetail();
+
+    await screen.findByText('offline');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('re-fetches events since the last-seen seq after reconnecting', async () => {
@@ -291,6 +307,169 @@ describe('SessionDetail', () => {
     rerender(tree(true));
 
     expect(await screen.findByText('missed while offline')).toBeInTheDocument();
+  });
+
+  it('applies nothing twice when a reconnect gap-fill response overlaps already-applied events', async () => {
+    vi.spyOn(sessionsApi, 'getSessionEvents')
+      .mockResolvedValueOnce([
+        {
+          seq: 1,
+          sessionId: 'sess-1',
+          event: { type: 'assistant_text', sessionId: 'sess-1', text: 'first', at: 1 },
+          createdAt: 1,
+        },
+        {
+          seq: 2,
+          sessionId: 'sess-1',
+          event: { type: 'assistant_text', sessionId: 'sess-1', text: 'already applied event', at: 2 },
+          createdAt: 2,
+        },
+      ])
+      // The reconnect gap-fill's response is not atomic with what was already applied — this
+      // response re-includes seq 2 (already applied above) alongside seq 3 (genuinely new), which
+      // is exactly what SessionDetail.tsx's `gap.filter((g) => g.seq > lastSeqRef.current)` exists
+      // to guard against. Deleting that filter would make this response get appended in full,
+      // duplicating the seq-2 event — which is what the assertion below checks for.
+      .mockResolvedValueOnce([
+        {
+          seq: 2,
+          sessionId: 'sess-1',
+          event: { type: 'assistant_text', sessionId: 'sess-1', text: 'already applied event', at: 2 },
+          createdAt: 2,
+        },
+        {
+          seq: 3,
+          sessionId: 'sess-1',
+          event: { type: 'assistant_text', sessionId: 'sess-1', text: 'gap event 3', at: 3 },
+          createdAt: 3,
+        },
+      ]);
+
+    function tree(isLive: boolean) {
+      vi.spyOn(sessionsProviderModule, 'useSessions').mockReturnValue({
+        sessions: [activeSummary],
+        loaded: true,
+        connectionState: isLive ? ('live' as const) : ('reconnecting' as const),
+        loadError: undefined,
+        dismissSession: vi.fn(),
+        sendCommand: vi.fn(),
+        callDaemon: vi.fn(),
+        subscribe: vi.fn(() => () => {}),
+      });
+      return (
+        <MemoryRouter initialEntries={['/sessions/sess-1']}>
+          <Routes>
+            <Route path="/sessions/:id" element={<SessionDetail token="tok-1" onUnauthorized={() => {}} />} />
+          </Routes>
+        </MemoryRouter>
+      );
+    }
+
+    const { rerender } = render(tree(true));
+    await screen.findByText('already applied event');
+
+    rerender(tree(false));
+    rerender(tree(true));
+
+    await screen.findByText('gap event 3');
+    // The overlapping seq-2 event must appear exactly once — not a second time from the gap-fill.
+    expect(screen.getAllByText('already applied event')).toHaveLength(1);
+  });
+
+  it('does not let a gap-fill response regress lastSeq below a newer event already applied live', async () => {
+    // This isolates line 132's `setLastSeq((prev) => Math.max(prev, ...))` specifically. The
+    // scenario: a live event (seq 8) is applied first, then a reconnect gap-fill that was fetched
+    // against a *stale* lastSeq resolves with a lower seq (3) in the same React batch — before a
+    // render has had a chance to update lastSeqRef, so the gap-fill's own filter still sees the old
+    // (lower) lastSeq and does not exclude it on that basis. If setLastSeq took the gap-fill's
+    // value directly instead of Math.max-ing it against the current state, this would regress
+    // lastSeq from 8 back down to 3. Asserting only on final rendered text wouldn't distinguish
+    // this from the filter alone doing the work, so the observable checked below is what the next
+    // reconnect asks the server for — proof of what lastSeq actually settled on.
+    const handlers = new Map<string, (message: LiveEvent) => void>();
+    const subscribe = vi.fn((sessionId: string, handler: (message: LiveEvent) => void) => {
+      handlers.set(sessionId, handler);
+      return () => handlers.delete(sessionId);
+    });
+    const emit = (message: LiveEvent) => handlers.get(message.sessionId)?.(message);
+
+    let resolveGapFill: ((value: sessionsApi.StoredSessionEvent[]) => void) | undefined;
+    const gapFillPromise = new Promise<sessionsApi.StoredSessionEvent[]>((resolve) => {
+      resolveGapFill = resolve;
+    });
+
+    const getEventsSpy = vi
+      .spyOn(sessionsApi, 'getSessionEvents')
+      .mockResolvedValueOnce([
+        {
+          seq: 2,
+          sessionId: 'sess-1',
+          event: { type: 'assistant_text', sessionId: 'sess-1', text: 'history', at: 2 },
+          createdAt: 2,
+        },
+      ])
+      // First reconnect's gap-fill: held pending so it resolves after the live event below.
+      .mockReturnValueOnce(gapFillPromise)
+      // Second reconnect's gap-fill: only used to observe what lastSeq was passed as `since`.
+      .mockResolvedValueOnce([]);
+
+    function tree(connectionState: 'live' | 'reconnecting') {
+      vi.spyOn(sessionsProviderModule, 'useSessions').mockReturnValue({
+        sessions: [activeSummary],
+        loaded: true,
+        connectionState,
+        loadError: undefined,
+        dismissSession: vi.fn(),
+        sendCommand: vi.fn(),
+        callDaemon: vi.fn(),
+        subscribe,
+      });
+      return (
+        <MemoryRouter initialEntries={['/sessions/sess-1']}>
+          <Routes>
+            <Route path="/sessions/:id" element={<SessionDetail token="tok-1" onUnauthorized={() => {}} />} />
+          </Routes>
+        </MemoryRouter>
+      );
+    }
+
+    const { rerender } = render(tree('live'));
+    await screen.findByText('history');
+
+    // Reconnect: this kicks off the gap-fill fetch (against lastSeq=2) and leaves it pending.
+    rerender(tree('reconnecting'));
+    rerender(tree('live'));
+
+    // Within one batch: apply a live event that jumps lastSeq to 8, then resolve the still-pending
+    // gap-fill with a lower seq (3). Both are queued before React re-renders (and thus before
+    // lastSeqRef.current updates), so the gap-fill's filter still reads the pre-live-event value —
+    // it's the Math.max in setLastSeq, not the filter, that has to stop the regression here.
+    await act(async () => {
+      emit({
+        sessionId: 'sess-1',
+        seq: 8,
+        event: { type: 'assistant_text', sessionId: 'sess-1', text: 'newer live event', at: 8 },
+      });
+      resolveGapFill!([
+        {
+          seq: 3,
+          sessionId: 'sess-1',
+          event: { type: 'assistant_text', sessionId: 'sess-1', text: 'stale gap event', at: 3 },
+          createdAt: 3,
+        },
+      ]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await screen.findByText('newer live event');
+
+    // Second reconnect: if lastSeq had regressed to 3, this would ask the server for events since
+    // 3. Asking since 8 proves the Math.max held.
+    rerender(tree('reconnecting'));
+    rerender(tree('live'));
+
+    await waitFor(() => expect(getEventsSpy).toHaveBeenNthCalledWith(3, 'tok-1', 'sess-1', 8));
   });
 
   it('shows "Session not found" when the id is not in the shared sessions list', async () => {

@@ -75,7 +75,11 @@ export default function SessionList({ token, onUnauthorized }: SessionListProps)
         </div>
       </div>
 
-      {loadError && (
+      {/* See SessionDetail.tsx's identical guard for why this is suppressed (not reworded) while
+       * offline: `loadError` is a raw fetch-failure message ("Failed to fetch"), not a relay
+       * diagnosis, and the ConnectionBadge above already reports "offline" from the honest source
+       * (navigator.onLine). A real relay failure while online still renders here as before. */}
+      {loadError && connectionState !== 'offline' && (
         <p role="alert" className="bg-danger-bg text-danger-text rounded-md px-4 py-3">
           Couldn't reach the relay: {loadError}
         </p>

@@ -165,10 +165,24 @@ describe('SessionList', () => {
     expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument();
   });
 
-  it('shows a banner when the initial list load failed', () => {
+  it('shows a banner when the initial list load failed while online', () => {
     vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
+    // connectionState defaults to 'live' in mockSessions() — a genuine relay failure while the
+    // device is online must still surface clearly, not be swallowed by the offline suppression.
     mockSessions({ loadError: 'HTTP 500' });
     renderList();
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 500');
+  });
+
+  it('does not blame the relay for a load failure caused by the device itself being offline', () => {
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
+    // A device going offline mid-fetch makes `fetch` throw TypeError: Failed to fetch — a
+    // fetch-layer artifact, not a relay diagnosis. When connectionState is 'offline' (the honest,
+    // navigator.onLine-sourced signal the badge above already reports), the banner must not render
+    // "Couldn't reach the relay: Failed to fetch" and contradict the badge.
+    mockSessions({ loadError: 'Failed to fetch', connectionState: 'offline' as const });
+    renderList();
+    expect(screen.getByText('offline')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

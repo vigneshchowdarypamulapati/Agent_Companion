@@ -170,7 +170,19 @@ export default function SessionDetail({ token, onUnauthorized }: SessionDetailPr
         ← Back to sessions
       </Link>
 
-      {loadError && (
+      {/*
+       * Suppressed while offline rather than shown with different copy: `loadError` is the raw
+       * message from a failed fetch, and when the device itself has no network that message is
+       * always something like "Failed to fetch" — a fetch-layer artifact of the browser giving up,
+       * not a fact about the relay. Rendering it (even reworded) would still imply this screen has
+       * something specific to say about why the *relay* failed, when it has no idea — the device
+       * never got far enough to find out. The ConnectionBadge below already says "offline" from
+       * navigator.onLine, which is the honest, correctly-sourced signal for this condition, so the
+       * banner would be redundant at best and relay-blaming at worst. A genuine relay failure while
+       * the device IS online (connectionState is 'connecting' or 'reconnecting', not 'offline')
+       * still hits this branch and renders normally — only the offline case is swallowed.
+       */}
+      {loadError && connectionState !== 'offline' && (
         <p role="alert" className="bg-danger-bg text-danger-text rounded-md px-4 py-3">
           Couldn't reach the relay: {loadError}
         </p>
