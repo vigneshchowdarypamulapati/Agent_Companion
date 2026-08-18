@@ -10,6 +10,19 @@ export interface LiveEvent {
 
 export type { CommandAckResult };
 
+/**
+ * The one source of truth for "is this actually live right now" — every badge in the UI reads
+ * this instead of keeping its own boolean, so there is exactly one place that can be wrong.
+ *
+ *   - 'connecting':   the very first connection attempt hasn't succeeded yet.
+ *   - 'live':         the socket is open and the device reports it has network connectivity.
+ *   - 'reconnecting': it connected successfully at least once, and is currently down and retrying.
+ *   - 'offline':      `navigator.onLine` says the device itself has no network — this overrides
+ *                      the socket's own state, because a relay-unreachable error in that case is
+ *                      the phone's radio, not the relay, and the UI must not blame the server for it.
+ */
+export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'offline';
+
 export interface UseRelayConnectionOptions {
   url: string;
   token: string;
@@ -33,11 +46,13 @@ export interface UseRelayConnectionOptions {
    * mount effect's dependency array below: it's a fixed injection seam, not
    * a value that should trigger a reconnect if a caller's reference changes.
    */
-  createConnection?: (options: RelayConnectionOptions) => Pick<RelayConnection, 'connect' | 'close' | 'sendCommand'>;
+  createConnection?: (
+    options: RelayConnectionOptions
+  ) => Pick<RelayConnection, 'connect' | 'close' | 'sendCommand' | 'checkLiveness'>;
 }
 
 export interface UseRelayConnectionResult {
-  connected: boolean;
+  connectionState: ConnectionState;
   /**
    * Resolves once the command's outcome is known — a real ack, a client-side timeout, or the
    * connection being torn down while the command was still pending (see RelayConnection's
@@ -58,8 +73,16 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
     onUnauthorized,
     createConnection = (opts) => new RelayConnection(opts),
   } = options;
-  const [connected, setConnected] = useState(false);
-  const connectionRef = useRef<Pick<RelayConnection, 'connect' | 'close' | 'sendCommand'> | undefined>(undefined);
+  const [socketOpen, setSocketOpen] = useState(false);
+  const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine);
+  // Mutated synchronously in the 'open' handler below, right before the setSocketOpen call that
+  // triggers the re-render reading it — a ref rather than state because it only ever needs to
+  // flip once (true stays true for the life of this hook instance) and doesn't need its own
+  // render pass.
+  const hasConnectedOnceRef = useRef(false);
+  const connectionRef = useRef<
+    Pick<RelayConnection, 'connect' | 'close' | 'sendCommand' | 'checkLiveness'> | undefined
+  >(undefined);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
   const onLogRef = useRef(onLog);
@@ -75,8 +98,11 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
       url,
       token,
       onEvent: (message) => onEventRef.current(message),
-      onOpen: () => setConnected(true),
-      onClose: () => setConnected(false),
+      onOpen: () => {
+        hasConnectedOnceRef.current = true;
+        setSocketOpen(true);
+      },
+      onClose: () => setSocketOpen(false),
       onLog: (message) => onLogRef.current?.(message),
       onUnauthorized: () => onUnauthorizedRef.current?.(),
       onCommandAck: (commandId, result) => {
@@ -95,6 +121,44 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
     };
   }, [url, token]);
 
+  // Liveness is only ever re-verified in response to one of these two signals, never on a
+  // timer — see RelayConnection.checkLiveness's doc comment for why polling isn't needed and
+  // would just disturb a healthy-but-idle connection. visibilitychange is the one that matters
+  // for phones: Android and iOS alike commonly keep a socket reading OPEN after the device
+  // slept through the underlying connection dying, and visibilitychange→visible fires the
+  // instant the user looks at the screen again. It also fires on a plain tab switch (Android
+  // Chrome does this even for switching apps briefly) — harmless here, since checkLiveness only
+  // acts when the connection actually looks stale.
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (document.visibilityState !== 'visible') return;
+      connectionRef.current?.checkLiveness();
+    }
+    function handleOnline() {
+      setIsOnline(true);
+      connectionRef.current?.checkLiveness();
+    }
+    function handleOffline() {
+      setIsOnline(false);
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const connectionState: ConnectionState = !isOnline
+    ? 'offline'
+    : socketOpen
+      ? 'live'
+      : hasConnectedOnceRef.current
+        ? 'reconnecting'
+        : 'connecting';
+
   const sendCommand = useCallback((sessionId: string, command: Command): Promise<CommandAckResult> => {
     return new Promise((resolve) => {
       const connection = connectionRef.current;
@@ -109,5 +173,5 @@ export function useRelayConnection(options: UseRelayConnectionOptions): UseRelay
     });
   }, []);
 
-  return { connected, sendCommand };
+  return { connectionState, sendCommand };
 }

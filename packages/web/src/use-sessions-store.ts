@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Command, SessionEvent, SessionStatus } from '@companion/protocol';
 import { RELAY_WS_URL } from './config';
 import { getActiveSessions, dismissSession as apiDismissSession, UnauthorizedError } from './api/sessions';
-import { useRelayConnection, type CommandAckResult, type LiveEvent } from './use-relay-connection';
+import { useRelayConnection, type CommandAckResult, type ConnectionState, type LiveEvent } from './use-relay-connection';
+
+export type { ConnectionState };
 
 export interface SessionSummary {
   id: string;
@@ -33,7 +35,7 @@ const STATUS_BY_EVENT_TYPE: Partial<Record<SessionEvent['type'], SessionStatus>>
 export interface UseSessionsStoreResult {
   sessions: SessionSummary[];
   loaded: boolean;
-  connected: boolean;
+  connectionState: ConnectionState;
   loadError: string | undefined;
   dismissSession: (sessionId: string) => Promise<void>;
   sendCommand: (sessionId: string, command: Command) => Promise<CommandAckResult>;
@@ -157,7 +159,7 @@ export function useSessionsStore(token: string, onUnauthorized: () => void): Use
     };
   }, [loadSessions]);
 
-  const { connected, sendCommand } = useRelayConnection({
+  const { connectionState, sendCommand } = useRelayConnection({
     url: RELAY_WS_URL,
     token,
     onEvent: handleLiveEvent,
@@ -167,7 +169,7 @@ export function useSessionsStore(token: string, onUnauthorized: () => void): Use
 
   const isFirstConnect = useRef(true);
   useEffect(() => {
-    if (!connected) return;
+    if (connectionState !== 'live') return;
     if (isFirstConnect.current) {
       isFirstConnect.current = false;
       return;
@@ -177,7 +179,7 @@ export function useSessionsStore(token: string, onUnauthorized: () => void): Use
     // — simpler, and correct for sessions that started, stopped, or changed
     // status during the gap.
     void loadSessions();
-  }, [connected, loadSessions]);
+  }, [connectionState, loadSessions]);
 
   const dismissSessionFn = useCallback(
     async (sessionId: string): Promise<void> => {
@@ -210,5 +212,5 @@ export function useSessionsStore(token: string, onUnauthorized: () => void): Use
     };
   }, []);
 
-  return { sessions, loaded, connected, loadError, dismissSession: dismissSessionFn, sendCommand, subscribe };
+  return { sessions, loaded, connectionState, loadError, dismissSession: dismissSessionFn, sendCommand, subscribe };
 }

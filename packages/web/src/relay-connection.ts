@@ -42,6 +42,19 @@ export interface RelayConnectionOptions {
    * phone user is never left staring at "Sending…" indefinitely.
    */
   commandAckTimeoutMs?: number;
+  /**
+   * How long the connection can go without receiving *any* frame from the relay (an event, a
+   * command_ack — anything) before `checkLiveness` stops trusting `readyState === OPEN` and
+   * forces a fresh connection. Browsers auto-reply to the relay's ws-level ping frames (see
+   * hub.ts's heartbeat) without ever surfacing them to JS, so a socket a phone held while
+   * asleep can read OPEN indefinitely after the underlying network path is gone — this is the
+   * only way to catch that. Defaults to 15000ms: well under the ~60s the relay allows before it
+   * gives up on a silent connection (two missed 30s ping cycles), but long enough that a
+   * session sitting idle between events doesn't look "stale" on its own — checkLiveness only
+   * ever runs in response to an explicit visibilitychange/online signal, never on a timer, so a
+   * merely-idle-but-healthy connection is never disturbed while the tab stays foregrounded.
+   */
+  livenessProbeThresholdMs?: number;
 }
 
 interface PendingCommand {
@@ -73,11 +86,20 @@ export class RelayConnection {
   private readonly maxBackoffMs: number;
   private readonly openConfirmMs: number;
   private readonly commandAckTimeoutMs: number;
+  private readonly livenessProbeThresholdMs: number;
   private ws: WebSocket | undefined;
   private backoffMs: number;
   private closed = true;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private openConfirmTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Set on 'open' and on every inbound frame — see `checkLiveness`. */
+  private lastActivityAt: number | undefined;
+  /**
+   * Set by `checkLiveness` just before it closes a socket it no longer trusts, so the 'close'
+   * handler knows to reopen immediately (bypassing backoff and its jitter) instead of treating
+   * this like an ordinary drop. Cleared as soon as that reopen happens.
+   */
+  private forcingReconnect = false;
   /**
    * Every command handed to `sendCommand` that hasn't yet been resolved (by ack, timeout, or
    * `close()`) — whether still queued because the socket wasn't open, or already transmitted and
@@ -98,11 +120,50 @@ export class RelayConnection {
     this.maxBackoffMs = options.maxBackoffMs ?? 10_000;
     this.openConfirmMs = options.openConfirmMs ?? 3000;
     this.commandAckTimeoutMs = options.commandAckTimeoutMs ?? 10_000;
+    this.livenessProbeThresholdMs = options.livenessProbeThresholdMs ?? 15_000;
     this.backoffMs = this.initialBackoffMs;
   }
 
   connect(): void {
     this.closed = false;
+    this.openSocket();
+  }
+
+  /**
+   * Called by the caller (see use-relay-connection.ts) when it has independent evidence worth
+   * acting on: the tab just became visible again, or the device just regained network
+   * connectivity. Neither of those proves the socket is dead, but both are exactly the moments
+   * a dead-but-OPEN socket (see `livenessProbeThresholdMs`'s doc comment) would otherwise sit
+   * undetected for a long time, and a phone user staring at a stale screen right after unlocking
+   * their phone is the whole reason this class exists — so this always errs toward reconnecting
+   * rather than waiting for more proof.
+   *
+   * Two independent cases:
+   *   - Socket reads OPEN: only reconnect if genuinely stale (see `livenessProbeThresholdMs`) —
+   *     a socket that has heard from the relay recently is trusted as-is.
+   *   - Socket is not OPEN (mid-backoff after a real drop): jump the queue and retry right now
+   *     instead of waiting out whatever backoff delay is still pending. If nothing is pending
+   *     (still in the middle of the very first connect attempt) there is nothing to jump ahead
+   *     of, so this is a no-op.
+   */
+  checkLiveness(): void {
+    if (this.closed) return;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const idleMs = Date.now() - (this.lastActivityAt ?? 0);
+      if (idleMs < this.livenessProbeThresholdMs) return;
+      this.onLog(
+        `No data from the relay in ${idleMs}ms — treating the connection as dead and forcing a reconnect`
+      );
+      this.backoffMs = this.initialBackoffMs;
+      this.forcingReconnect = true;
+      this.ws.close();
+      return;
+    }
+    if (!this.reconnectTimer) return;
+    this.onLog('Regained connectivity — retrying the relay connection now instead of waiting out the backoff');
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.backoffMs = this.initialBackoffMs;
     this.openSocket();
   }
 
@@ -221,6 +282,7 @@ export class RelayConnection {
     });
 
     ws.addEventListener('open', () => {
+      this.lastActivityAt = Date.now();
       this.onLog('Connected to relay');
       // Flush every command that was queued while disconnected before anything
       // newly-generated goes out, mirroring the daemon's own event-replay ordering (see
@@ -238,6 +300,10 @@ export class RelayConnection {
     });
 
     ws.addEventListener('message', (messageEvent) => {
+      // Recorded even for a frame that fails to parse below — the point is only to prove the
+      // socket is still receiving *something* from the relay, which an unparseable frame does
+      // just as well as a valid one.
+      this.lastActivityAt = Date.now();
       let parsed: RelayToBrowserMessage;
       try {
         parsed = RelayToBrowserMessage.parse(JSON.parse(String(messageEvent.data)));
@@ -268,6 +334,11 @@ export class RelayConnection {
         this.onUnauthorizedCallback();
         return;
       }
+      if (this.forcingReconnect) {
+        this.forcingReconnect = false;
+        this.openSocket();
+        return;
+      }
       this.scheduleReconnect();
     });
   }
@@ -275,7 +346,18 @@ export class RelayConnection {
   private scheduleReconnect(): void {
     this.reconnectTimer = setTimeout(() => {
       this.openSocket();
-    }, this.backoffMs);
+    }, jitter(this.backoffMs));
     this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
   }
+}
+
+/**
+ * Equal jitter (delay is uniformly random in [ms/2, ms]) applied at the moment a reconnect is
+ * scheduled — the stored backoff itself still grows on a clean exponential curve. Without this,
+ * every client that dropped at the same instant (e.g. a whole household's phones waking from
+ * sleep together, or the relay itself restarting) retries in lockstep and re-hits the relay in
+ * synchronized spikes instead of a spread-out trickle.
+ */
+function jitter(ms: number): number {
+  return ms / 2 + Math.random() * (ms / 2);
 }

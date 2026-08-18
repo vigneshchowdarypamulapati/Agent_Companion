@@ -26,7 +26,7 @@ function mockSessions(overrides: Partial<ReturnType<typeof sessionsProviderModul
   vi.spyOn(sessionsProviderModule, 'useSessions').mockReturnValue({
     sessions: [activeSummary],
     loaded: true,
-    connected: true,
+    connectionState: 'live' as const,
     loadError: undefined,
     dismissSession: vi.fn(),
     sendCommand,
@@ -263,11 +263,11 @@ describe('SessionDetail', () => {
         },
       ]);
 
-    function tree(connected: boolean) {
+    function tree(isLive: boolean) {
       vi.spyOn(sessionsProviderModule, 'useSessions').mockReturnValue({
         sessions: [activeSummary],
         loaded: true,
-        connected,
+        connectionState: isLive ? ('live' as const) : ('reconnecting' as const),
         loadError: undefined,
         dismissSession: vi.fn(),
         sendCommand: vi.fn(),

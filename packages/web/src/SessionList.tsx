@@ -3,7 +3,7 @@ import { Link } from 'react-router';
 import { useSessions } from './SessionsProvider';
 import { sortSessions } from './sort-sessions';
 import { formatRelativeTime } from './format-relative-time';
-import { STATUS_LABEL } from './SessionStatusBar';
+import { STATUS_LABEL, ConnectionBadge } from './SessionStatusBar';
 import { getDaemonStatus } from './api/devices';
 import { UnauthorizedError } from './api/sessions';
 import DaemonOnboarding from './DaemonOnboarding';
@@ -14,7 +14,7 @@ export interface SessionListProps {
 }
 
 export default function SessionList({ token, onUnauthorized }: SessionListProps) {
-  const { sessions, loaded, connected, loadError, dismissSession } = useSessions();
+  const { sessions, loaded, connectionState, loadError, dismissSession } = useSessions();
   const [dismissErrors, setDismissErrors] = useState<Record<string, string>>({});
   const [daemonPaired, setDaemonPaired] = useState<boolean | undefined>(undefined);
   const onUnauthorizedRef = useRef(onUnauthorized);
@@ -68,9 +68,7 @@ export default function SessionList({ token, onUnauthorized }: SessionListProps)
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">Sessions</h1>
         <div className="flex items-center gap-2">
-          <span className={`text-xs px-2 py-1 rounded-full ${connected ? 'bg-success' : 'bg-danger'}`}>
-            {connected ? 'live' : 'reconnecting…'}
-          </span>
+          <ConnectionBadge connectionState={connectionState} />
           <Link to="/settings" className="text-xs text-ink-muted underline">
             Settings
           </Link>

@@ -18,7 +18,7 @@ describe('SessionsProvider', () => {
   it('provides the sessions store to descendants', async () => {
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
-      connected: true,
+      connectionState: 'live' as const,
       sendCommand: vi.fn(),
     });
 

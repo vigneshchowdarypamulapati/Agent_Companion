@@ -13,7 +13,7 @@ function mockSessions(overrides: Partial<ReturnType<typeof sessionsProviderModul
   vi.spyOn(sessionsProviderModule, 'useSessions').mockReturnValue({
     sessions: [],
     loaded: true,
-    connected: true,
+    connectionState: 'live' as const,
     loadError: undefined,
     dismissSession,
     sendCommand: vi.fn(),

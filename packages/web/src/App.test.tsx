@@ -40,7 +40,7 @@ describe('App', () => {
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
     vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
-      connected: true,
+      connectionState: 'live' as const,
       sendCommand: vi.fn(),
     });
 
@@ -55,7 +55,7 @@ describe('App', () => {
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
     vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
-      connected: true,
+      connectionState: 'live' as const,
       sendCommand: vi.fn(),
     });
 
@@ -69,7 +69,7 @@ describe('App', () => {
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
     vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
-      connected: true,
+      connectionState: 'live' as const,
       sendCommand: vi.fn(),
     });
     window.history.pushState({}, '', '/some/unknown/path');
@@ -83,7 +83,7 @@ describe('App', () => {
     storeCredentials({ token: 'tok-1', deviceId: 'dev-1' });
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
-      connected: true,
+      connectionState: 'live' as const,
       sendCommand: vi.fn(),
     });
     vi.spyOn(devicesApi, 'getDevice').mockResolvedValue({

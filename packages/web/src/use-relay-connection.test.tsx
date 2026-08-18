@@ -9,6 +9,7 @@ function createFakeConnection() {
   const sentCommands: { sessionId: string; command: Command }[] = [];
   const close = vi.fn();
   const connect = vi.fn();
+  const checkLiveness = vi.fn();
   let nextCommandId = 0;
   const factory = (options: RelayConnectionOptions) => {
     capturedOptions = options;
@@ -17,6 +18,7 @@ function createFakeConnection() {
     return {
       connect,
       close,
+      checkLiveness,
       sendCommand: vi.fn((sessionId: string, command: Command) => {
         sentCommands.push({ sessionId, command });
         nextCommandId += 1;
@@ -24,17 +26,97 @@ function createFakeConnection() {
       }),
     };
   };
-  return { factory, sentCommands, connect, close, getOptions: () => capturedOptions! };
+  return { factory, sentCommands, connect, close, checkLiveness, getOptions: () => capturedOptions! };
+}
+
+function setOnline(value: boolean) {
+  Object.defineProperty(navigator, 'onLine', { configurable: true, value });
+}
+
+function setVisibility(value: DocumentVisibilityState) {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value });
 }
 
 describe('useRelayConnection', () => {
-  it('connects on mount and reports connected once onOpen fires', async () => {
+  it('connects on mount and reports "live" once onOpen fires', async () => {
     const fake = createFakeConnection();
     const { result } = renderHook(() =>
       useRelayConnection({ url: 'ws://x', token: 't', onEvent: () => {}, createConnection: fake.factory })
     );
 
-    await waitFor(() => expect(result.current.connected).toBe(true));
+    await waitFor(() => expect(result.current.connectionState).toBe('live'));
+  });
+
+  it('reports "connecting" before the first open, and "reconnecting" after a drop that followed a successful open', () => {
+    let capturedOptions: RelayConnectionOptions | undefined;
+    const factory = (options: RelayConnectionOptions) => {
+      capturedOptions = options;
+      return { connect: vi.fn(), close: vi.fn(), checkLiveness: vi.fn(), sendCommand: vi.fn() };
+    };
+    const { result } = renderHook(() =>
+      useRelayConnection({ url: 'ws://x', token: 't', onEvent: () => {}, createConnection: factory })
+    );
+    expect(result.current.connectionState).toBe('connecting');
+
+    act(() => {
+      capturedOptions!.onOpen?.();
+    });
+    expect(result.current.connectionState).toBe('live');
+
+    act(() => {
+      capturedOptions!.onClose?.();
+    });
+    expect(result.current.connectionState).toBe('reconnecting');
+  });
+
+  it('reports "offline" regardless of socket state once navigator.onLine goes false, and recovers on "online"', () => {
+    const fake = createFakeConnection();
+    const { result } = renderHook(() =>
+      useRelayConnection({ url: 'ws://x', token: 't', onEvent: () => {}, createConnection: fake.factory })
+    );
+    expect(result.current.connectionState).toBe('live');
+
+    act(() => {
+      setOnline(false);
+      window.dispatchEvent(new Event('offline'));
+    });
+    expect(result.current.connectionState).toBe('offline');
+
+    act(() => {
+      setOnline(true);
+      window.dispatchEvent(new Event('online'));
+    });
+    expect(result.current.connectionState).toBe('live');
+  });
+
+  it('calls checkLiveness on the connection when the tab becomes visible, but not when it becomes hidden', () => {
+    const fake = createFakeConnection();
+    renderHook(() => useRelayConnection({ url: 'ws://x', token: 't', onEvent: () => {}, createConnection: fake.factory }));
+    fake.checkLiveness.mockClear();
+
+    act(() => {
+      setVisibility('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(fake.checkLiveness).not.toHaveBeenCalled();
+
+    act(() => {
+      setVisibility('visible');
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(fake.checkLiveness).toHaveBeenCalledOnce();
+  });
+
+  it('calls checkLiveness on the connection when the device regains connectivity', () => {
+    const fake = createFakeConnection();
+    renderHook(() => useRelayConnection({ url: 'ws://x', token: 't', onEvent: () => {}, createConnection: fake.factory }));
+    fake.checkLiveness.mockClear();
+
+    act(() => {
+      setOnline(true);
+      window.dispatchEvent(new Event('online'));
+    });
+    expect(fake.checkLiveness).toHaveBeenCalledOnce();
   });
 
   it('forwards received events to the onEvent callback', () => {

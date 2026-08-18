@@ -335,4 +335,101 @@ describe('RelayConnection', () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(connectionCount).toBe(1);
   });
+
+  // --- checkLiveness: the visibilitychange/online-triggered probe ---
+
+  it('forces a reconnect when the socket is OPEN but has been silent past livenessProbeThresholdMs', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    let connectionCount = 0;
+    const secondConnection = new Promise<void>((resolve) => {
+      wss.on('connection', () => {
+        connectionCount += 1;
+        if (connectionCount === 2) resolve();
+      });
+    });
+
+    const firstOpen = new Promise<void>((resolve) => {
+      connection = new RelayConnection({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 't',
+        onEvent: () => {},
+        livenessProbeThresholdMs: 20,
+        onOpen: () => resolve(),
+      });
+    });
+    connection!.connect();
+    await firstOpen;
+
+    // The socket genuinely is still OPEN — nothing severed it — but no frame has arrived in
+    // over livenessProbeThresholdMs, which is exactly the "dead but reads OPEN" case this exists
+    // to catch (a phone waking from sleep can't tell the difference on its own).
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    connection!.checkLiveness();
+
+    await secondConnection;
+    expect(connectionCount).toBe(2);
+  });
+
+  it('does not reconnect when checkLiveness is called on a socket that has heard from the relay recently', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    let connectionCount = 0;
+    wss.on('connection', () => {
+      connectionCount += 1;
+    });
+
+    const firstOpen = new Promise<void>((resolve) => {
+      connection = new RelayConnection({
+        url: `ws://127.0.0.1:${fake.port}`,
+        token: 't',
+        onEvent: () => {},
+        livenessProbeThresholdMs: 10_000,
+        onOpen: () => resolve(),
+      });
+    });
+    connection!.connect();
+    await firstOpen;
+
+    connection!.checkLiveness();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(connectionCount).toBe(1);
+  });
+
+  it('checkLiveness jumps the backoff queue and retries immediately when the socket is not open', async () => {
+    const fake = await startFakeRelay();
+    wss = fake.wss;
+
+    let connectionCount = 0;
+    const secondConnection = new Promise<void>((resolve) => {
+      wss.on('connection', (ws) => {
+        connectionCount += 1;
+        if (connectionCount === 1) {
+          ws.close();
+        } else {
+          resolve();
+        }
+      });
+    });
+
+    connection = new RelayConnection({
+      url: `ws://127.0.0.1:${fake.port}`,
+      token: 't',
+      onEvent: () => {},
+      // A long backoff that checkLiveness must skip past rather than wait out.
+      initialBackoffMs: 5_000,
+      maxBackoffMs: 5_000,
+    });
+    connection!.connect();
+
+    // Give the first connection a moment to be accepted and closed, putting the connection into
+    // its mid-backoff wait before we probe it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    connection!.checkLiveness();
+
+    await secondConnection;
+    expect(connectionCount).toBe(2);
+  });
 });

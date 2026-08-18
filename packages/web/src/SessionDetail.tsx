@@ -19,10 +19,15 @@ export interface SessionDetailProps {
 export default function SessionDetail({ token, onUnauthorized }: SessionDetailProps) {
   const { id } = useParams<{ id: string }>();
   const sessionId = id ?? '';
-  const { sessions, loaded: sessionsLoaded, connected, sendCommand, subscribe } = useSessions();
+  const { sessions, loaded: sessionsLoaded, connectionState, sendCommand, subscribe } = useSessions();
 
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [lastSeq, setLastSeq] = useState(0);
+  // Mirrors lastSeq so the reconnect gap-fill can compare against the value as of when its
+  // response lands, not the one captured when the effect ran — same ref-mirror pattern as
+  // onUnauthorizedRef below.
+  const lastSeqRef = useRef(0);
+  lastSeqRef.current = lastSeq;
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | undefined>();
   const historyLoadedRef = useRef(false);
@@ -107,22 +112,29 @@ export default function SessionDetail({ token, onUnauthorized }: SessionDetailPr
 
   const isFirstConnect = useRef(true);
   useEffect(() => {
-    if (!connected) return;
+    if (connectionState !== 'live') return;
     if (isFirstConnect.current) {
       isFirstConnect.current = false;
       return;
     }
     void (async () => {
       try {
-        const gap = await getSessionEvents(token, sessionId, lastSeq);
+        const gap = await getSessionEvents(token, sessionId, lastSeqRef.current);
         if (gap.length === 0) return;
-        setEvents((prev) => [...prev, ...gap.map((g) => g.event)]);
-        setLastSeq(gap[gap.length - 1].seq);
+        // The fetch is not atomic with the live stream: events can arrive over the socket
+        // while it is in flight, so the response may overlap what we already applied.
+        // Filtering against the live ref (rather than the `lastSeq` captured when this
+        // effect ran) is what stops a reconnect from duplicate-appending, and taking a
+        // max stops it from regressing lastSeq below a newer live event.
+        const fresh = gap.filter((g) => g.seq > lastSeqRef.current);
+        if (fresh.length === 0) return;
+        setEvents((prev) => [...prev, ...fresh.map((g) => g.event)]);
+        setLastSeq((prev) => Math.max(prev, fresh[fresh.length - 1].seq));
       } catch (err) {
         if (err instanceof UnauthorizedError) onUnauthorizedRef.current();
       }
     })();
-  }, [connected]);
+  }, [connectionState]);
 
   // Shared by SessionControls and PermissionPrompt (which ignore the returned promise — they
   // have no pending/retry UI of their own) and PromptInjectionBox (which awaits it to drive its
@@ -164,7 +176,7 @@ export default function SessionDetail({ token, onUnauthorized }: SessionDetailPr
         </p>
       )}
 
-      <SessionStatusBar status={summary.status} projectPath={summary.projectPath} connected={connected} />
+      <SessionStatusBar status={summary.status} projectPath={summary.projectPath} connectionState={connectionState} />
 
       {permissionRequest && (
         <PermissionPrompt

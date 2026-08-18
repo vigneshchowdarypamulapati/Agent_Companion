@@ -9,19 +9,19 @@ import type { LiveEvent } from './use-relay-connection';
 function mockUseRelayConnection() {
   let capturedOnEvent: ((message: LiveEvent) => void) | undefined;
   let capturedOnUnauthorized: (() => void) | undefined;
-  let connectedValue = true;
+  let stateValue: useRelayConnectionModule.ConnectionState = 'live';
   const sendCommand = vi.fn();
   vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockImplementation((options) => {
     capturedOnEvent = options.onEvent;
     capturedOnUnauthorized = options.onUnauthorized;
-    return { connected: connectedValue, sendCommand };
+    return { connectionState: stateValue, sendCommand };
   });
   return {
     emit: (message: LiveEvent) => capturedOnEvent?.(message),
     emitUnauthorized: () => capturedOnUnauthorized?.(),
     sendCommand,
     setConnected: (value: boolean) => {
-      connectedValue = value;
+      stateValue = value ? 'live' : 'reconnecting';
     },
   };
 }
