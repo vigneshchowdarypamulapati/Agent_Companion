@@ -20,7 +20,11 @@ services:
     # Build from the repo root: this is an npm workspaces monorepo and the relay depends on the
     # @companion/protocol workspace package, which must be compiled to dist/ before the relay's
     # own build can typecheck against it. The root `build` script already orders this correctly.
-    buildCommand: npm ci && npm run build -w @companion/protocol && npm run build -w @companion/relay
+    # `--include=dev` is required, not stylistic: NODE_ENV=production is set below (correctly —
+    # the relay's own runtime behaviour depends on it), and npm treats that as `--omit=dev`. The
+    # TypeScript compiler is a devDependency, so a plain `npm ci` here installs everything except
+    # the tool the very next command needs, and the build dies with `tsc: not found`.
+    buildCommand: npm ci --include=dev && npm run build -w @companion/protocol && npm run build -w @companion/relay
     startCommand: npm start -w @companion/relay
     # Unauthenticated liveness endpoint (see server.ts). Every other route requires a bearer
     # token, so pointing Render at any of them would report a permanently unhealthy service.
