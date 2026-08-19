@@ -145,11 +145,16 @@ gains one line: on a `stopped` event, `this.sessions.delete(id)` alongside the e
 
 ## Web changes (`packages/web/src`)
 
-**New `api/daemon-rpc.ts`** — typed wrappers around the existing `callDaemon` (from Task 6,
-already exposed through `SessionsProvider`): `listProjects()` and `startRemoteSession(projectPath,
-prompt)`, returning/throwing the same way the existing `api/*.ts` files do (see `api/sessions.ts`
-for the pattern), translating the RPC error codes above into `Error` messages a component can
-render directly.
+**No separate `api/daemon-rpc.ts` wrapper — corrected during planning.** An earlier draft of this
+spec called for one, styled like `api/sessions.ts`. That doesn't fit: unlike those files' plain
+`fetch`-based functions (which take just a `token`), `callDaemon` is a stateful function bound to
+the live WebSocket connection, only available via the `useSessions()` hook — there is no
+token-only, connection-independent way to call it. Components call `callDaemon('list_projects')`
+/ `callDaemon('start_session', { projectPath, prompt })` directly through `useSessions()`.
+`callDaemon` already rejects with a typed `RpcError` (`.code` + human-readable `.message`, sourced
+from `RPC_ERROR_MESSAGES` in `relay-connection.ts`) for every failure mode — including the two new
+codes above, once `RPC_ERROR_MESSAGES`'s exhaustive `Record<RpcErrorCode, string>` gains entries
+for them, which TypeScript enforces at compile time. No further error-translation layer is needed.
 
 **New `project-color.ts`** — a pure function `colorForProject(path: string): string`, a stable
 hash of the path into one of a small fixed set of Tailwind color tokens (reusing tokens already in
@@ -159,8 +164,8 @@ assignment or state.
 
 **New `StartSessionSheet.tsx`** — a bottom sheet (not a route navigation) containing:
 - A search-as-you-type project list (new `ProjectPicker.tsx` sub-component), fed by
-  `listProjects()`, most-recently-used first, with a quiet badge on `source: 'configured'`
-  entries that have no `lastUsedAt` ("first time").
+  `callDaemon('list_projects')`, most-recently-used first, with a quiet badge on
+  `source: 'configured'` entries that have no `lastUsedAt` ("first time").
 - Once a project is picked, the same prompt-input styling as `PromptInjectionBox` ("What should
   Claude do?"), reused directly rather than re-implemented, so the moment of starting a session
   feels continuous with replying to one.
