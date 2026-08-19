@@ -2,7 +2,7 @@ import { hostname, homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
-import { SessionManager } from './session-manager.js';
+import { SessionManager, DEFAULT_MAX_CONCURRENT_SESSIONS } from './session-manager.js';
 import { createHttpServer } from './http-server.js';
 import { realQueryFn } from './real-agent-sdk.js';
 import { getOrCreateDeviceToken } from './device-auth.js';
@@ -19,6 +19,10 @@ const DEVICE_TOKEN_PATH =
   process.env.COMPANION_DEVICE_TOKEN_PATH ?? join(homedir(), '.companion', 'daemon-device.json');
 const LOCAL_HTTP_TOKEN_PATH =
   process.env.COMPANION_LOCAL_HTTP_TOKEN_PATH ?? join(homedir(), '.companion', 'daemon-local-http.json');
+const PROJECTS_ROOT = process.env.COMPANION_PROJECTS_ROOT;
+const MAX_CONCURRENT_SESSIONS = Number(process.env.COMPANION_MAX_CONCURRENT_SESSIONS ?? DEFAULT_MAX_CONCURRENT_SESSIONS);
+const PROJECTS_FILE_PATH =
+  process.env.COMPANION_PROJECTS_FILE_PATH ?? join(homedir(), '.companion', 'daemon-projects.json');
 
 function relayHttpUrl(wsUrl: string): string {
   return wsUrl.replace(/^ws/, 'http');
@@ -158,10 +162,8 @@ export async function main(): Promise<void> {
       console.log(`[${event.sessionId}] ${event.type}`);
       relayClient?.sendEvent(event.sessionId, event);
     },
-    // Temporary literal path — Task 4 replaces this with real COMPANION_PROJECTS_FILE_PATH-driven
-    // wiring (mirroring DEVICE_TOKEN_PATH's own env-var-with-default pattern above). This is here
-    // only so main.ts keeps compiling now that projectStoreFilePath is a required option.
-    projectStoreFilePath: join(homedir(), '.companion', 'daemon-projects.json'),
+    projectStoreFilePath: PROJECTS_FILE_PATH,
+    maxConcurrentSessions: MAX_CONCURRENT_SESSIONS,
   });
 
   if (HTTP_ENABLED) {
@@ -219,7 +221,14 @@ export async function main(): Promise<void> {
               relayClient?.sendEvent(command.sessionId, errorEvent);
             });
           },
-          onRpcRequest: (method, params) => dispatchRpc(method, params, { version: DAEMON_VERSION, startedAt: DAEMON_STARTED_AT }),
+          onRpcRequest: (method, params) =>
+            dispatchRpc(method, params, {
+              version: DAEMON_VERSION,
+              startedAt: DAEMON_STARTED_AT,
+              manager,
+              projectStoreFilePath: PROJECTS_FILE_PATH,
+              projectsRoot: PROJECTS_ROOT,
+            }),
         });
         relayClient.connect();
         console.log(`Connecting to relay at ${RELAY_URL}`);

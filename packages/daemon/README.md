@@ -39,6 +39,12 @@ forever with no way to ever be controlled.
   machine's hostname).
 - `COMPANION_DEVICE_TOKEN_PATH` — where the daemon persists its relay device
   token after first pairing (default: `~/.companion/daemon-device.json`).
+- `COMPANION_PROJECTS_ROOT` — optional. A single directory whose immediate subdirectories become
+  startable from the phone even with no prior session history there. One root only, not a list.
+- `COMPANION_MAX_CONCURRENT_SESSIONS` — optional, default `3`. Upper bound on how many sessions
+  this daemon runs at once.
+- `COMPANION_PROJECTS_FILE_PATH` — where the daemon persists the list of projects it has started a
+  session in before (default: `~/.companion/daemon-projects.json`).
 
 ## Local HTTP surface
 
