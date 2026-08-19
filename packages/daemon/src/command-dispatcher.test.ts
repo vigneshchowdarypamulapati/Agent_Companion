@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import { SessionManager } from './session-manager.js';
 import { dispatchCommand, dispatchCommandWithAck } from './command-dispatcher.js';
 import { AsyncQueue } from './async-queue.js';
@@ -9,6 +9,22 @@ import type {
   PermissionResponse,
   QueryFn,
 } from './agent-sdk-port.js';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// SessionManager now requires a projectStoreFilePath. Tests here don't care about project-history
+// persistence, only that command dispatch is wired up correctly, so every test gets its own file
+// inside one shared temp directory (avoids per-test mkdtemp/cleanup ceremony) that's removed once
+// after the whole suite finishes — same pattern as http-server.test.ts.
+const sharedTempDir = mkdtempSync(join(tmpdir(), 'companion-command-dispatcher-test-'));
+afterAll(() => rm(sharedTempDir, { recursive: true, force: true }));
+
+function newProjectStoreFilePath(): string {
+  return join(sharedTempDir, `daemon-projects-${randomUUID()}.json`);
+}
 
 function createMockAgent() {
   const outgoing = new AsyncQueue<AgentMessage>();
@@ -27,7 +43,7 @@ function createMockAgent() {
 
 describe('dispatchCommand', () => {
   it('rejects start_session', async () => {
-    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, onEvent: () => {} });
+    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     await expect(
       dispatchCommand(manager, { type: 'start_session', projectPath: '/tmp/project', prompt: 'hi' })
     ).rejects.toThrow('start_session must be issued locally');
@@ -35,7 +51,7 @@ describe('dispatchCommand', () => {
 
   it('dispatches inject_prompt, respond_to_permission, pause, resume, and stop to the right session', async () => {
     const agent = createMockAgent();
-    const manager = new SessionManager({ queryFn: agent.queryFn, onEvent: () => {} });
+    const manager = new SessionManager({ queryFn: agent.queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     const runner = manager.startSession('/tmp/project', 'do the thing');
 
     const permissionPromise = agent.getCanUseTool()({ requestId: 'req-1', toolName: 'Bash', input: {} });
@@ -63,7 +79,7 @@ describe('dispatchCommand', () => {
   });
 
   it('propagates the error for an unknown session id', async () => {
-    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, onEvent: () => {} });
+    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     await expect(
       dispatchCommand(manager, { type: 'pause', sessionId: 'does-not-exist' })
     ).rejects.toThrow('No session with id does-not-exist');
@@ -73,7 +89,7 @@ describe('dispatchCommand', () => {
 describe('dispatchCommandWithAck', () => {
   it("acks 'delivered' and returns ok when dispatch succeeds", async () => {
     const agent = createMockAgent();
-    const manager = new SessionManager({ queryFn: agent.queryFn, onEvent: () => {} });
+    const manager = new SessionManager({ queryFn: agent.queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     const runner = manager.startSession('/tmp/project', 'do the thing');
     const acks: { status: 'delivered' | 'failed'; message?: string }[] = [];
 
@@ -87,7 +103,7 @@ describe('dispatchCommandWithAck', () => {
   });
 
   it("acks 'failed' with the thrown message and returns ok:false when dispatch throws, without touching the session", async () => {
-    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, onEvent: () => {} });
+    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     const acks: { status: 'delivered' | 'failed'; message?: string }[] = [];
 
     const result = await dispatchCommandWithAck(
@@ -102,7 +118,7 @@ describe('dispatchCommandWithAck', () => {
 
   it('calls sendAck exactly once per dispatch, whether it succeeds or fails', async () => {
     const agent = createMockAgent();
-    const manager = new SessionManager({ queryFn: agent.queryFn, onEvent: () => {} });
+    const manager = new SessionManager({ queryFn: agent.queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     const runner = manager.startSession('/tmp/project', 'do the thing');
     const sendAck = vi.fn();
 
