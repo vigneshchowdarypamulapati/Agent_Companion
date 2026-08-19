@@ -158,6 +158,10 @@ export async function main(): Promise<void> {
       console.log(`[${event.sessionId}] ${event.type}`);
       relayClient?.sendEvent(event.sessionId, event);
     },
+    // Temporary literal path — Task 4 replaces this with real COMPANION_PROJECTS_FILE_PATH-driven
+    // wiring (mirroring DEVICE_TOKEN_PATH's own env-var-with-default pattern above). This is here
+    // only so main.ts keeps compiling now that projectStoreFilePath is a required option.
+    projectStoreFilePath: join(homedir(), '.companion', 'daemon-projects.json'),
   });
 
   if (HTTP_ENABLED) {

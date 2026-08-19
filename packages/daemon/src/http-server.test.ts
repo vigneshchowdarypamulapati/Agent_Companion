@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterAll } from 'vitest';
 import request, { type Test } from 'supertest';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
@@ -14,8 +14,20 @@ import type {
   QueryFn,
 } from './agent-sdk-port.js';
 import type { SessionEvent } from '@companion/protocol';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const TOKEN = 'test-token-0123456789abcdef0123456789abcdef0123456789abcdef01';
+
+// SessionManager now requires a projectStoreFilePath. Tests here don't care about project-history
+// persistence, only that startSession is wired up correctly, so every test gets its own file
+// inside one shared temp directory (avoids per-test mkdtemp/cleanup ceremony) that's removed once
+// after the whole suite finishes.
+const sharedTempDir = mkdtempSync(join(tmpdir(), 'companion-http-server-test-'));
+afterAll(() => rm(sharedTempDir, { recursive: true, force: true }));
 
 /** Attaches the bearer token every route requires. */
 function auth(req: Test): Test {
@@ -60,15 +72,21 @@ function createMockAgent() {
   return { queryFn, outgoing, getCanUseTool: () => canUseTool! };
 }
 
-function setUp() {
+function setUp(overrides: { maxConcurrentSessions?: number } = {}) {
   const agent = createMockAgent();
   const eventLog: SessionEvent[] = [];
+  const projectStoreFilePath = join(sharedTempDir, `daemon-projects-${randomUUID()}.json`);
   const manager = new SessionManager({
     queryFn: agent.queryFn,
     onEvent: (e) => eventLog.push(e),
+    projectStoreFilePath,
+    ...overrides,
   });
+  // Spied so tests can assert "SessionManager was never reached" directly, now that
+  // SessionManager no longer exposes an active-session accessor to infer that from.
+  const startSessionSpy = vi.spyOn(manager, 'startSession');
   const app = createHttpServer(manager, eventLog, { token: TOKEN });
-  return { agent, eventLog, manager, app };
+  return { agent, eventLog, manager, app, startSessionSpy };
 }
 
 describe('HTTP control surface', () => {
@@ -120,7 +138,7 @@ describe('HTTP control surface', () => {
   });
 
   it('returns 400 when starting a second session while one is active', async () => {
-    const { app } = setUp();
+    const { app } = setUp({ maxConcurrentSessions: 1 });
 
     await auth(request(app).post('/sessions')).send({ projectPath: '/tmp/project', prompt: 'first' });
     const secondRes = await auth(request(app).post('/sessions')).send({
@@ -140,12 +158,12 @@ describe('HTTP control surface', () => {
   });
 
   it('returns 400 (not 201) when POST /sessions is sent an empty body', async () => {
-    const { manager, app } = setUp();
+    const { startSessionSpy, app } = setUp();
 
     const res = await auth(request(app).post('/sessions')).send({});
 
     expect(res.status).toBe(400);
-    expect(manager.getActiveSession()).toBeUndefined();
+    expect(startSessionSpy).not.toHaveBeenCalled();
   });
 
   it('returns 400 when POST /sessions/:id/respond is missing the approved field', async () => {
@@ -165,16 +183,16 @@ describe('HTTP control surface', () => {
 
 describe('local HTTP surface auth', () => {
   it('returns 401 and never reaches SessionManager when no Authorization header is sent', async () => {
-    const { manager, app } = setUp();
+    const { startSessionSpy, app } = setUp();
 
     const res = await request(app).post('/sessions').send({ projectPath: '/tmp/project', prompt: 'x' });
 
     expect(res.status).toBe(401);
-    expect(manager.getActiveSession()).toBeUndefined();
+    expect(startSessionSpy).not.toHaveBeenCalled();
   });
 
   it('returns 401 for a well-formed but wrong bearer token', async () => {
-    const { manager, app } = setUp();
+    const { startSessionSpy, app } = setUp();
 
     const res = await request(app)
       .post('/sessions')
@@ -182,7 +200,7 @@ describe('local HTTP surface auth', () => {
       .send({ projectPath: '/tmp/project', prompt: 'x' });
 
     expect(res.status).toBe(401);
-    expect(manager.getActiveSession()).toBeUndefined();
+    expect(startSessionSpy).not.toHaveBeenCalled();
   });
 
   it('returns 401 for a malformed Authorization header (no Bearer prefix)', async () => {
@@ -222,7 +240,7 @@ describe('local HTTP surface auth', () => {
   });
 
   it('returns 403 for a correct token but a spoofed Host header (DNS-rebinding shape)', async () => {
-    const { manager, app } = setUp();
+    const { startSessionSpy, app } = setUp();
 
     const res = await request(app)
       .post('/sessions')
@@ -231,7 +249,7 @@ describe('local HTTP surface auth', () => {
       .send({ projectPath: '/tmp/project', prompt: 'x' });
 
     expect(res.status).toBe(403);
-    expect(manager.getActiveSession()).toBeUndefined();
+    expect(startSessionSpy).not.toHaveBeenCalled();
   });
 
   it('succeeds with the correct token and the default loopback Host supertest sends', async () => {

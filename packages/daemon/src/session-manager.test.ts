@@ -3,6 +3,9 @@ import { SessionManager } from './session-manager.js';
 import { AsyncQueue } from './async-queue.js';
 import type { AgentMessage, AgentQuery, QueryFn } from './agent-sdk-port.js';
 import type { SessionEvent } from '@companion/protocol';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function createMockQueryFn(): QueryFn {
   return () => {
@@ -16,46 +19,96 @@ function createMockQueryFn(): QueryFn {
   };
 }
 
+async function makeManager(overrides: { maxConcurrentSessions?: number } = {}) {
+  const tempDir = await mkdtemp(join(tmpdir(), 'companion-session-manager-test-'));
+  const projectStoreFilePath = join(tempDir, 'daemon-projects.json');
+  const manager = new SessionManager({
+    queryFn: createMockQueryFn(),
+    onEvent: () => {},
+    projectStoreFilePath,
+    ...overrides,
+  });
+  return { manager, cleanup: () => rm(tempDir, { recursive: true, force: true }) };
+}
+
 describe('SessionManager', () => {
-  it('starts a session and makes it the active session', () => {
-    const events: SessionEvent[] = [];
-    const manager = new SessionManager({
-      queryFn: createMockQueryFn(),
-      onEvent: (e) => events.push(e),
-    });
-
-    const runner = manager.startSession('/tmp/project', 'do the thing');
-
-    expect(manager.getActiveSession()?.id).toBe(runner.id);
-    expect(manager.getSession(runner.id)).toBe(runner);
+  it('starts a session and it is retrievable via getSession', async () => {
+    const { manager, cleanup } = await makeManager();
+    try {
+      const runner = manager.startSession('/tmp/project', 'do the thing');
+      expect(manager.getSession(runner.id)).toBe(runner);
+    } finally {
+      await cleanup();
+    }
   });
 
-  it('throws when starting a second session while one is active', () => {
-    const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {} });
-
-    manager.startSession('/tmp/project', 'first');
-
-    expect(() => manager.startSession('/tmp/project', 'second')).toThrow();
+  it('throws when looking up an unknown session id', async () => {
+    const { manager, cleanup } = await makeManager();
+    try {
+      expect(() => manager.getSession('does-not-exist')).toThrow();
+    } finally {
+      await cleanup();
+    }
   });
 
-  it('throws when looking up an unknown session id', () => {
-    const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {} });
-    expect(() => manager.getSession('does-not-exist')).toThrow();
+  it('allows starting sessions up to maxConcurrentSessions', async () => {
+    const { manager, cleanup } = await makeManager({ maxConcurrentSessions: 2 });
+    try {
+      const first = manager.startSession('/tmp/project-a', 'first');
+      const second = manager.startSession('/tmp/project-b', 'second');
+      expect(manager.getSession(first.id)).toBe(first);
+      expect(manager.getSession(second.id)).toBe(second);
+    } finally {
+      await cleanup();
+    }
   });
 
-  it('clears the active slot after stopSession, allowing a new session to start', async () => {
-    const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {} });
-
-    const first = manager.startSession('/tmp/project', 'first');
-    await manager.stopSession(first.id);
-
-    expect(manager.getActiveSession()).toBeUndefined();
-
-    const second = manager.startSession('/tmp/project', 'second');
-    expect(manager.getActiveSession()?.id).toBe(second.id);
+  it('throws when starting one more than maxConcurrentSessions', async () => {
+    const { manager, cleanup } = await makeManager({ maxConcurrentSessions: 2 });
+    try {
+      manager.startSession('/tmp/project-a', 'first');
+      manager.startSession('/tmp/project-b', 'second');
+      expect(() => manager.startSession('/tmp/project-c', 'third')).toThrow();
+    } finally {
+      await cleanup();
+    }
   });
 
-  it('unwinds activeSessionId if runner.start() throws synchronously, allowing a subsequent startSession to succeed', () => {
+  it('the cap-exceeded throw carries isCapExceeded: true so callers can distinguish it from other startSession failures', async () => {
+    const { manager, cleanup } = await makeManager({ maxConcurrentSessions: 1 });
+    try {
+      manager.startSession('/tmp/project-a', 'first');
+      let threw = false;
+      try {
+        manager.startSession('/tmp/project-b', 'second');
+      } catch (err) {
+        threw = true;
+        expect((err as { isCapExceeded?: boolean }).isCapExceeded).toBe(true);
+      }
+      expect(threw).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('a stopped session no longer counts toward the cap, and is removed from the manager entirely', async () => {
+    const { manager, cleanup } = await makeManager({ maxConcurrentSessions: 1 });
+    try {
+      const first = manager.startSession('/tmp/project', 'first');
+      await manager.stopSession(first.id);
+
+      // Removed, not merely excluded from the cap count: looking it up now throws.
+      expect(() => manager.getSession(first.id)).toThrow();
+
+      // And the freed cap slot is real, not just a count that happens to be right.
+      const second = manager.startSession('/tmp/project', 'second');
+      expect(manager.getSession(second.id)).toBe(second);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('unwinds on a synchronous runner.start() failure, and does not count the failed attempt toward the cap', async () => {
     let callCount = 0;
     const flakyQueryFn: QueryFn = (args) => {
       callCount += 1;
@@ -64,16 +117,25 @@ describe('SessionManager', () => {
       }
       return createMockQueryFn()(args);
     };
-    const manager = new SessionManager({ queryFn: flakyQueryFn, onEvent: () => {} });
+    const tempDir = await mkdtemp(join(tmpdir(), 'companion-session-manager-test-'));
+    const projectStoreFilePath = join(tempDir, 'daemon-projects.json');
+    const manager = new SessionManager({
+      queryFn: flakyQueryFn,
+      onEvent: () => {},
+      projectStoreFilePath,
+      maxConcurrentSessions: 1,
+    });
+    try {
+      expect(() => manager.startSession('/tmp/project', 'first')).toThrow('bad cwd');
 
-    expect(() => manager.startSession('/tmp/project', 'first')).toThrow('bad cwd');
-    expect(manager.getActiveSession()).toBeUndefined();
-
-    const second = manager.startSession('/tmp/project', 'second');
-    expect(manager.getActiveSession()?.id).toBe(second.id);
+      const second = manager.startSession('/tmp/project', 'second');
+      expect(manager.getSession(second.id)).toBe(second);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 
-  it('crash-terminated session self-clears the active slot without an explicit stopSession call', async () => {
+  it('a crash-terminated session is removed from the manager without an explicit stopSession call', async () => {
     const crashingQueryFn: QueryFn = () => ({
       [Symbol.asyncIterator]: () => ({
         next: () => Promise.reject(new Error('agent crashed')),
@@ -82,18 +144,53 @@ describe('SessionManager', () => {
       close: vi.fn(() => {}),
     });
     const events: SessionEvent[] = [];
+    const tempDir = await mkdtemp(join(tmpdir(), 'companion-session-manager-test-'));
+    const projectStoreFilePath = join(tempDir, 'daemon-projects.json');
     const manager = new SessionManager({
       queryFn: crashingQueryFn,
       onEvent: (e) => events.push(e),
+      projectStoreFilePath,
     });
+    try {
+      const runner = manager.startSession('/tmp/project', 'do the thing');
+      expect(manager.getSession(runner.id)).toBe(runner);
 
-    const runner = manager.startSession('/tmp/project', 'do the thing');
-    expect(manager.getActiveSession()?.id).toBe(runner.id);
+      // Let the crash propagate through drainMessages' catch/finalize path.
+      await new Promise((resolve) => setImmediate(resolve));
 
-    // Let the crash propagate through drainMessages' catch/finalize path.
-    await new Promise((resolve) => setImmediate(resolve));
+      expect(() => manager.getSession(runner.id)).toThrow();
+      expect(events.some((e) => e.type === 'stopped')).toBe(true);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
 
-    expect(manager.getActiveSession()).toBeUndefined();
-    expect(events.some((e) => e.type === 'stopped')).toBe(true);
+  it('records the project path as used on a successful start', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'companion-session-manager-test-'));
+    const projectStoreFilePath = join(tempDir, 'daemon-projects.json');
+    const manager = new SessionManager({
+      queryFn: createMockQueryFn(),
+      onEvent: () => {},
+      projectStoreFilePath,
+    });
+    try {
+      manager.startSession('/tmp/my-project', 'do the thing');
+
+      // The record is fire-and-forget (startSession never awaits it), and involves real
+      // mkdir/read/write filesystem I/O rather than just a microtask hop — a single
+      // setImmediate/tick is not reliably enough time for it to land. Poll instead of
+      // guessing a fixed delay.
+      const { listKnownProjects } = await import('./project-store.js');
+      const deadline = Date.now() + 2000;
+      let known: Awaited<ReturnType<typeof listKnownProjects>> = [];
+      while (Date.now() < deadline) {
+        known = await listKnownProjects({ filePath: projectStoreFilePath });
+        if (known.some((p) => p.path === '/tmp/my-project')) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(known.map((p) => p.path)).toContain('/tmp/my-project');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
