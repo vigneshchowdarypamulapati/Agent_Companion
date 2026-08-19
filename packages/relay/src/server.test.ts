@@ -1352,7 +1352,30 @@ describe('relay server', () => {
       .set('Authorization', `Bearer ${browserToken}`);
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ paired: true });
+    expect(res.body).toEqual({ paired: true, name: 'my-daemon', connected: false, pairedAt: expect.any(Number) });
+  });
+
+  it('GET /devices/daemon-status reports connected: true once the daemon has a live WebSocket connection', async () => {
+    httpServer = await createRelayServer({
+      store: new InMemoryStore(),
+      pubsub: new InMemoryPubSub(),
+      identityVerifier: makeIdentityVerifier(),
+    });
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const port = (httpServer.address() as AddressInfo).port;
+    const browserToken = await registerBrowser(httpServer, 'my-browser');
+    const daemonToken = await pairDaemon(httpServer, browserToken, 'my-daemon');
+
+    const daemonWs = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${daemonToken}`);
+    sockets.push(daemonWs);
+    await waitForOpen(daemonWs);
+
+    const res = await request(httpServer)
+      .get('/devices/daemon-status')
+      .set('Authorization', `Bearer ${browserToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ paired: true, name: 'my-daemon', connected: true, pairedAt: expect.any(Number) });
   });
 
   it('GET /devices/daemon-status returns 401 when unauthenticated', async () => {

@@ -27,8 +27,8 @@ export default function SessionList({ token, onUnauthorized }: SessionListProps)
     if (!showsEmptyState) return;
     let cancelled = false;
     getDaemonStatus(token)
-      .then((paired) => {
-        if (!cancelled) setDaemonPaired(paired);
+      .then((status) => {
+        if (!cancelled) setDaemonPaired(status.paired);
       })
       .catch((err) => {
         if (cancelled) return;

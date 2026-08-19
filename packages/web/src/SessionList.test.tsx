@@ -39,7 +39,7 @@ describe('SessionList', () => {
   });
 
   it('shows the plain empty state when there are no active sessions and a daemon is already paired', async () => {
-    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: true, name: 'my-daemon', connected: true, pairedAt: 1700000000000 });
     mockSessions();
     renderList();
     expect(await screen.findByText('No active sessions.')).toBeInTheDocument();
@@ -47,7 +47,7 @@ describe('SessionList', () => {
   });
 
   it('shows daemon onboarding when there are no active sessions and no daemon is paired', async () => {
-    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(false);
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: false });
     mockSessions();
     renderList();
     expect(await screen.findByText('Connect your daemon')).toBeInTheDocument();
@@ -62,7 +62,7 @@ describe('SessionList', () => {
   });
 
   it('does not show onboarding or the empty-state text once real sessions exist', async () => {
-    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(false);
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: false });
     mockSessions({
       sessions: [{ id: 'sess-a', projectPath: '/tmp/a', status: 'running', lastEventAt: 1 }],
     });
@@ -80,7 +80,7 @@ describe('SessionList', () => {
   });
 
   it('shows a loading state before the initial load resolves', () => {
-    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: true, name: 'my-daemon', connected: true, pairedAt: 1700000000000 });
     mockSessions({ loaded: false });
     renderList();
     expect(screen.getByText('Loading…')).toBeInTheDocument();
@@ -124,7 +124,7 @@ describe('SessionList', () => {
   });
 
   it('links to the settings screen', () => {
-    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: true, name: 'my-daemon', connected: true, pairedAt: 1700000000000 });
     mockSessions();
     renderList();
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('href', '/settings');
@@ -166,7 +166,7 @@ describe('SessionList', () => {
   });
 
   it('shows a banner when the initial list load failed while online', () => {
-    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: true, name: 'my-daemon', connected: true, pairedAt: 1700000000000 });
     // connectionState defaults to 'live' in mockSessions() — a genuine relay failure while the
     // device is online must still surface clearly, not be swallowed by the offline suppression.
     mockSessions({ loadError: 'HTTP 500' });
@@ -175,7 +175,7 @@ describe('SessionList', () => {
   });
 
   it('does not blame the relay for a load failure caused by the device itself being offline', () => {
-    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: true, name: 'my-daemon', connected: true, pairedAt: 1700000000000 });
     // A device going offline mid-fetch makes `fetch` throw TypeError: Failed to fetch — a
     // fetch-layer artifact, not a relay diagnosis. When connectionState is 'offline' (the honest,
     // navigator.onLine-sourced signal the badge above already reports), the banner must not render

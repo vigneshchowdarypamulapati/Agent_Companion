@@ -30,7 +30,11 @@ export async function unpairDevice(token: string): Promise<void> {
   }
 }
 
-export async function getDaemonStatus(token: string): Promise<boolean> {
+export type DaemonStatus =
+  | { paired: false }
+  | { paired: true; name: string; connected: boolean; pairedAt: number };
+
+export async function getDaemonStatus(token: string): Promise<DaemonStatus> {
   const res = await fetch(`${RELAY_HTTP_URL}/devices/daemon-status`, {
     headers: { authorization: `Bearer ${token}` },
   });
@@ -38,8 +42,7 @@ export async function getDaemonStatus(token: string): Promise<boolean> {
   if (!res.ok) {
     throw new Error(`Failed to fetch daemon status: HTTP ${res.status}`);
   }
-  const body = (await res.json()) as { paired: boolean };
-  return body.paired;
+  return (await res.json()) as DaemonStatus;
 }
 
 export interface RegisterBrowserResult {

@@ -58,14 +58,26 @@ describe('devices API', () => {
     await unpairDevice('tok-1');
   });
 
-  it('getDaemonStatus returns true when the relay reports paired: true', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ paired: true }) })));
-    await expect(getDaemonStatus('tok-1')).resolves.toBe(true);
+  it('getDaemonStatus returns the full status when the relay reports paired: true', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ paired: true, name: 'my-daemon', connected: true, pairedAt: 123 }),
+      }))
+    );
+    await expect(getDaemonStatus('tok-1')).resolves.toEqual({
+      paired: true,
+      name: 'my-daemon',
+      connected: true,
+      pairedAt: 123,
+    });
   });
 
-  it('getDaemonStatus returns false when the relay reports paired: false', async () => {
+  it('getDaemonStatus returns paired: false when the relay reports paired: false', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ paired: false }) })));
-    await expect(getDaemonStatus('tok-1')).resolves.toBe(false);
+    await expect(getDaemonStatus('tok-1')).resolves.toEqual({ paired: false });
   });
 
   it('getDaemonStatus throws UnauthorizedError on 401', async () => {

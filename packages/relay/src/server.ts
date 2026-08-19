@@ -416,7 +416,16 @@ export async function createRelayServer({
         return;
       }
       const daemon = await store.getDaemonDeviceForUser(device.userId);
-      res.status(200).json({ paired: daemon !== undefined });
+      if (!daemon) {
+        res.status(200).json({ paired: false });
+        return;
+      }
+      res.status(200).json({
+        paired: true,
+        name: daemon.name,
+        connected: hub.isDeviceConnected(daemon.id),
+        pairedAt: daemon.createdAt,
+      });
     })
   );
 

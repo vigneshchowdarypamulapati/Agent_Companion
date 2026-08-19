@@ -38,7 +38,7 @@ describe('App', () => {
   it('shows the session list when credentials are already stored', async () => {
     storeCredentials({ token: 'tok-1', deviceId: 'dev-1' });
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
-    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: true, name: 'my-daemon', connected: true, pairedAt: 1700000000000 });
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connectionState: 'live' as const,
       sendCommand: vi.fn(),
@@ -54,7 +54,7 @@ describe('App', () => {
     mockSignedIn = true;
     vi.spyOn(devicesApi, 'registerBrowserDevice').mockResolvedValue({ token: 'tok-1', deviceId: 'dev-1' });
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
-    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: true, name: 'my-daemon', connected: true, pairedAt: 1700000000000 });
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connectionState: 'live' as const,
       sendCommand: vi.fn(),
@@ -69,7 +69,7 @@ describe('App', () => {
   it('redirects an unknown path to the session list', async () => {
     storeCredentials({ token: 'tok-1', deviceId: 'dev-1' });
     vi.spyOn(sessionsApi, 'getActiveSessions').mockResolvedValue([]);
-    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(true);
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: true, name: 'my-daemon', connected: true, pairedAt: 1700000000000 });
     vi.spyOn(useRelayConnectionModule, 'useRelayConnection').mockReturnValue({
       connectionState: 'live' as const,
       sendCommand: vi.fn(),

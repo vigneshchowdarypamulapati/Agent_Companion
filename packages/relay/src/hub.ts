@@ -645,7 +645,7 @@ export class ConnectionHub {
   /** Whether any live connection is currently registered for `deviceId` — used to distinguish "no
    * daemon paired at all" (NO_DAEMON) from "paired, but not connected right now"
    * (DAEMON_DISCONNECTED) in `routeRpcRequest`. */
-  private isDeviceConnected(deviceId: string): boolean {
+  isDeviceConnected(deviceId: string): boolean {
     const set = this.connections.get(deviceId);
     return set !== undefined && set.size > 0;
   }
