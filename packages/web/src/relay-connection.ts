@@ -46,6 +46,8 @@ export const RPC_ERROR_MESSAGES: Record<RpcErrorCode, string> = {
   [RPC_ERROR_CODES.UNKNOWN_METHOD]: 'This daemon does not support that request. Try reloading the page.',
   [RPC_ERROR_CODES.IN_FLIGHT_CAP_EXCEEDED]: 'Too many pending requests — try again in a moment.',
   [RPC_ERROR_CODES.HANDLER_ERROR]: 'The daemon failed to handle that request.',
+  [RPC_ERROR_CODES.INVALID_PROJECT_PATH]: "That project folder couldn't be found. It may have moved or been deleted — try picking again.",
+  [RPC_ERROR_CODES.CONCURRENT_SESSION_LIMIT]: "You've reached the limit of concurrent sessions. Stop one before starting another.",
   [RPC_ERROR_CODES.NOT_CONNECTED]: 'Not connected to the relay.',
 };
 

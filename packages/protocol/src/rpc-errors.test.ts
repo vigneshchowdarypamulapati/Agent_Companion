@@ -21,4 +21,9 @@ describe('RPC_ERROR_CODES', () => {
       NOT_CONNECTED: 'not_connected',
     });
   });
+
+  it('includes the new session-start error codes', () => {
+    expect(RPC_ERROR_CODES.INVALID_PROJECT_PATH).toBe('invalid_project_path');
+    expect(RPC_ERROR_CODES.CONCURRENT_SESSION_LIMIT).toBe('concurrent_session_limit');
+  });
 });

@@ -30,6 +30,15 @@ export const RPC_ERROR_CODES = {
   IN_FLIGHT_CAP_EXCEEDED: 'in_flight_cap_exceeded',
   /** The daemon's handler for a known method threw. */
   HANDLER_ERROR: 'handler_error',
+  /** The `start_session` caller gave a `projectPath` that is not in the daemon's known project
+   * history, not under its configured `COMPANION_PROJECTS_ROOT` (if one is set), or no longer
+   * exists on disk. One code covers all three causes: the remedy is identical from the caller's
+   * side (re-list, pick again), and splitting them risks leaking filesystem structure for no
+   * actionable benefit. */
+  INVALID_PROJECT_PATH: 'invalid_project_path',
+  /** The daemon already has `maxConcurrentSessions` non-stopped sessions running; `start_session`
+   * refuses to start another until one stops. See `SessionManager`'s concurrency cap. */
+  CONCURRENT_SESSION_LIMIT: 'concurrent_session_limit',
   /** Produced entirely client-side, never sent over the wire: the browser has no open socket to
    * the relay at all right now, so there is nothing to route the request through. Distinct from
    * `daemon_disconnected` (relay reachable, daemon isn't) — this is "we can't even ask." */
