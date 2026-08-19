@@ -185,4 +185,38 @@ describe('SessionList', () => {
     expect(screen.getByText('offline')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
+
+  it('groups sessions into Needs you / Running / Stopped tiers', () => {
+    mockSessions({
+      sessions: [
+        { id: 'a', projectPath: '/tmp/a', status: 'running', lastEventAt: 1 },
+        { id: 'b', projectPath: '/tmp/b', status: 'waiting_permission', lastEventAt: 2 },
+        { id: 'c', projectPath: '/tmp/c', status: 'stopped', lastEventAt: 3 },
+      ],
+    });
+    renderList();
+
+    expect(screen.getByRole('heading', { name: /needs you/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /^running$/i })).toBeInTheDocument();
+    expect(screen.getByText(/stopped/i)).toBeInTheDocument();
+  });
+
+  it('leads each card with the project display name, not the full path', () => {
+    mockSessions({
+      sessions: [{ id: 'a', projectPath: '/home/me/my-project', status: 'running', lastEventAt: 1 }],
+    });
+    renderList();
+
+    expect(screen.getByText('my-project')).toBeInTheDocument();
+    expect(screen.getByText('/home/me/my-project')).toBeInTheDocument();
+  });
+
+  it('a floating action button opens the start-session sheet', async () => {
+    vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue({ paired: true, name: 'my-daemon', connected: true, pairedAt: 1700000000000 });
+    mockSessions({ sessions: [], callDaemon: vi.fn().mockResolvedValue([]) });
+    renderList();
+
+    await userEvent.click(screen.getByRole('button', { name: /start a session/i }));
+    expect(screen.getByRole('dialog', { name: /start a session/i })).toBeInTheDocument();
+  });
 });
