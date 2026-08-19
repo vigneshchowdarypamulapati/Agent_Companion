@@ -45,6 +45,23 @@ async function writeFileAtomicish(filePath: string, data: ProjectStoreFile): Pro
   await writeFile(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
+/**
+ * Serializes writes to the project store file to prevent lost-update races.
+ *
+ * Without serialization, two concurrent `recordProjectUsed` calls can interleave like this:
+ *   call(A):  read file → {projects: [X]}
+ *   call(B):  read file → {projects: [X]}       (B's read before A's write lands)
+ *   call(A):  modify copy, write → [X, A]
+ *   call(B):  modify its own copy (never saw A), write → [X, B]
+ *                                                 ← A's entry is silently lost
+ *
+ * All writes chain onto this queue, so each call's read-modify-write completes before the next
+ * one starts, preventing interleaving. The queue is wrapped with `.then(() => {}, () => {})` to
+ * swallow failures — a failed write doesn't poison the queue for subsequent calls, but the
+ * caller still sees the real error via the returned promise.
+ */
+let writeQueue: Promise<void> = Promise.resolve();
+
 export async function listKnownProjects(options: { filePath: string }): Promise<KnownProject[]> {
   const data = await readFileOrEmpty(options.filePath);
   return data.projects;
@@ -55,18 +72,27 @@ export async function listKnownProjects(options: { filePath: string }): Promise<
  * already known, otherwise appends a new one. Called from `SessionManager.startSession` as the
  * single choke point both the local HTTP surface and the remote RPC `start_session` handler go
  * through, so a project's history is recorded correctly regardless of which door started it.
+ *
+ * Serializes writes (see `writeQueue` above) to ensure concurrent calls don't lose updates.
  */
 export async function recordProjectUsed(
   path: string,
   options: { filePath: string; now?: () => number }
 ): Promise<void> {
   const now = options.now ?? Date.now;
-  const data = await readFileOrEmpty(options.filePath);
-  const existing = data.projects.find((p) => p.path === path);
-  if (existing) {
-    existing.lastUsedAt = now();
-  } else {
-    data.projects.push({ path, lastUsedAt: now() });
-  }
-  await writeFileAtomicish(options.filePath, data);
+  const task = writeQueue.then(async () => {
+    const data = await readFileOrEmpty(options.filePath);
+    const existing = data.projects.find((p) => p.path === path);
+    if (existing) {
+      existing.lastUsedAt = now();
+    } else {
+      data.projects.push({ path, lastUsedAt: now() });
+    }
+    await writeFileAtomicish(options.filePath, data);
+  });
+  // Chain the queue onto a version that swallows failure, so one failed write doesn't poison
+  // every write queued after it — each call's own caller still sees the real rejection via the
+  // `task` promise returned below, only the *queue's internal chain* needs to keep flowing.
+  writeQueue = task.catch(() => {});
+  return task;
 }

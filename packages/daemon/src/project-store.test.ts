@@ -55,4 +55,34 @@ describe('project-store', () => {
 
     await expect(listKnownProjects({ filePath })).rejects.toThrow(/malformed/i);
   });
+
+  it('recordProjectUsed on path A, then B, then A again preserves both entries with correct timestamps', async () => {
+    // This test guards against the race condition fix being accidentally removed:
+    // without serialization, B's entry could be lost when A is updated again.
+    const filePath = await makeTempFilePath();
+    await recordProjectUsed('/tmp/project-a', { filePath, now: () => 1000 });
+    await recordProjectUsed('/tmp/project-b', { filePath, now: () => 2000 });
+    await recordProjectUsed('/tmp/project-a', { filePath, now: () => 3000 });
+
+    const result = await listKnownProjects({ filePath });
+    expect(result).toHaveLength(2);
+    expect(result).toContainEqual({ path: '/tmp/project-a', lastUsedAt: 3000 });
+    expect(result).toContainEqual({ path: '/tmp/project-b', lastUsedAt: 2000 });
+  });
+
+  it('two concurrent recordProjectUsed calls (without awaiting between them) both survive', async () => {
+    // This test directly verifies the serialization queue prevents lost updates:
+    // issuing two calls without awaiting between them would trigger the race
+    // condition without the queue, causing one to be silently lost.
+    const filePath = await makeTempFilePath();
+    const call1 = recordProjectUsed('/tmp/project-a', { filePath, now: () => 1000 });
+    const call2 = recordProjectUsed('/tmp/project-b', { filePath, now: () => 2000 });
+
+    await Promise.all([call1, call2]);
+
+    const result = await listKnownProjects({ filePath });
+    expect(result).toHaveLength(2);
+    expect(result).toContainEqual({ path: '/tmp/project-a', lastUsedAt: 1000 });
+    expect(result).toContainEqual({ path: '/tmp/project-b', lastUsedAt: 2000 });
+  });
 });
