@@ -96,3 +96,21 @@ export async function recordProjectUsed(
   writeQueue = task.catch(() => {});
   return task;
 }
+
+/**
+ * Resolves once every write enqueued so far on `writeQueue` — including any fire-and-forget call
+ * a caller never awaited (e.g. `SessionManager.startSession`'s `void recordProjectUsed(...)`) —
+ * has settled, success or failure.
+ *
+ * Exists for callers, mainly tests, that need to know the store is quiescent without making
+ * production code await a write it deliberately treats as fire-and-forget. Because a
+ * `recordProjectUsed` call updates `writeQueue` synchronously (before its first `await` runs —
+ * see the doc comment above), this correctly waits for a write that was only just kicked off, as
+ * long as it's called after the synchronous call that triggered it (e.g. after
+ * `manager.startSession(...)` returns), not concurrently with it.
+ *
+ * `writeQueue` is already wrapped in `.catch(() => {})`, so awaiting it here never rejects.
+ */
+export function whenProjectStoreIdle(): Promise<void> {
+  return writeQueue;
+}

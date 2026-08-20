@@ -6,6 +6,7 @@ import type { SessionEvent } from '@companion/protocol';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { whenProjectStoreIdle } from './project-store.js';
 
 function createMockQueryFn(): QueryFn {
   return () => {
@@ -28,7 +29,17 @@ async function makeManager(overrides: { maxConcurrentSessions?: number } = {}) {
     projectStoreFilePath,
     ...overrides,
   });
-  return { manager, cleanup: () => rm(tempDir, { recursive: true, force: true }) };
+  return {
+    manager,
+    // startSession's recordProjectUsed write is deliberately fire-and-forget in production code
+    // — wait for the write queue to drain before removing tempDir, or the write's
+    // mkdir/writeFile can recreate part of the directory after rm's walk has already passed it,
+    // causing an intermittent ENOTEMPTY.
+    cleanup: async () => {
+      await whenProjectStoreIdle();
+      await rm(tempDir, { recursive: true, force: true });
+    },
+  };
 }
 
 describe('SessionManager', () => {
@@ -131,6 +142,9 @@ describe('SessionManager', () => {
       const second = manager.startSession('/tmp/project', 'second');
       expect(manager.getSession(second.id)).toBe(second);
     } finally {
+      // The successful second startSession call above has a fire-and-forget recordProjectUsed
+      // write in flight — wait for it before removing tempDir (see makeManager's cleanup for why).
+      await whenProjectStoreIdle();
       await rm(tempDir, { recursive: true, force: true });
     }
   });
@@ -161,6 +175,9 @@ describe('SessionManager', () => {
       expect(() => manager.getSession(runner.id)).toThrow();
       expect(events.some((e) => e.type === 'stopped')).toBe(true);
     } finally {
+      // startSession's fire-and-forget recordProjectUsed write is in flight — wait for it before
+      // removing tempDir (see makeManager's cleanup for why).
+      await whenProjectStoreIdle();
       await rm(tempDir, { recursive: true, force: true });
     }
   });

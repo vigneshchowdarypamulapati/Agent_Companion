@@ -7,7 +7,7 @@ import { RPC_ERROR_CODES } from '@companion/protocol';
 import { SessionManager } from './session-manager.js';
 import { AsyncQueue } from './async-queue.js';
 import type { AgentMessage, AgentQuery, QueryFn } from './agent-sdk-port.js';
-import { recordProjectUsed } from './project-store.js';
+import { recordProjectUsed, whenProjectStoreIdle } from './project-store.js';
 
 function createMockQueryFn(): QueryFn {
   return () => {
@@ -231,6 +231,11 @@ describe('rpc-handlers: list_projects / start_session', () => {
       expect(typeof result.id).toBe('string');
       expect(result.status).toBe('running');
     } finally {
+      // start_session triggers SessionManager.startSession's fire-and-forget recordProjectUsed
+      // write (deliberately un-awaited in production code) — wait for it to settle before
+      // removing tempDir, or the write's mkdir/writeFile can recreate part of the directory after
+      // rm's walk has already passed it, causing an intermittent ENOTEMPTY.
+      await whenProjectStoreIdle();
       await rm(tempDir, { recursive: true, force: true });
     }
   });
@@ -286,6 +291,10 @@ describe('rpc-handlers: list_projects / start_session', () => {
       expect(outcome.result).toBeUndefined();
       expect(outcome.error).toBe(RPC_ERROR_CODES.CONCURRENT_SESSION_LIMIT);
     } finally {
+      // The first (successful) manager.startSession('first') call above also has a fire-and-forget
+      // recordProjectUsed write in flight — wait for it before removing tempDir (see comment on
+      // the earlier finally block for why).
+      await whenProjectStoreIdle();
       await rm(tempDir, { recursive: true, force: true });
     }
   });
@@ -323,6 +332,9 @@ describe('rpc-handlers: list_projects / start_session', () => {
       expect(outcome.error).toBe(RPC_ERROR_CODES.HANDLER_ERROR);
       expect(outcome.error).not.toBe(RPC_ERROR_CODES.CONCURRENT_SESSION_LIMIT);
     } finally {
+      // Defensive, same as the other start_session tests above: wait for any pending
+      // recordProjectUsed write before removing tempDir.
+      await whenProjectStoreIdle();
       await rm(tempDir, { recursive: true, force: true });
     }
   });
