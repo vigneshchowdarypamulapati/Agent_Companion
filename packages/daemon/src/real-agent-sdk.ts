@@ -1,6 +1,14 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, listSessions, getSessionMessages } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentMessage, AgentQuery, QueryFn } from './agent-sdk-port.js';
+import type {
+  AgentMessage,
+  AgentQuery,
+  QueryFn,
+  DiscoveredSession,
+  HistoryMessage,
+  ListSessionsFn,
+  GetSessionMessagesFn,
+} from './agent-sdk-port.js';
 
 /**
  * Adapts the real `@anthropic-ai/claude-agent-sdk` package to our `QueryFn`
@@ -58,6 +66,9 @@ export const realQueryFn: QueryFn = ({ prompt, options }) => {
           ? { behavior: 'allow' }
           : { behavior: 'deny', message: response.reason ?? 'Denied' };
       },
+      sessionId: options.sessionId,
+      resume: options.resumeSessionId,
+      forkSession: options.resumeSessionId ? true : undefined,
     },
   });
 
@@ -131,3 +142,47 @@ export function translateSdkMessage(message: SDKMessage): AgentMessage[] {
       return [];
   }
 }
+
+export const realListSessionsFn: ListSessionsFn = async ({ dir }) => {
+  const sessions = await listSessions({ dir, includeProgrammatic: false });
+  return sessions.map(
+    (s): DiscoveredSession => ({
+      sessionId: s.sessionId,
+      summary: s.summary,
+      firstPrompt: s.firstPrompt,
+      lastModified: s.lastModified,
+    })
+  );
+};
+
+/**
+ * `getSessionMessages` returns `message: unknown` per entry (the SDK's own transcript-read type
+ * is deliberately loose) — extracted the same defensive way `translateSdkMessage` above handles
+ * the live `SDKMessage` union: treat it as `{content?: unknown}`, keep only `text`-type content
+ * blocks, join their text. A message that yields no text after extraction (a pure tool-use or
+ * tool-result turn) is dropped rather than emitted as an empty string.
+ */
+function extractText(message: unknown): string {
+  if (typeof message !== 'object' || message === null) return '';
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter(
+      (block): block is { type: 'text'; text: string } =>
+        typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text'
+    )
+    .map((block) => block.text)
+    .join('');
+}
+
+export const realGetSessionMessagesFn: GetSessionMessagesFn = async (sessionId, { dir }) => {
+  const entries = await getSessionMessages(sessionId, { dir });
+  const messages: HistoryMessage[] = [];
+  for (const entry of entries) {
+    if (entry.type !== 'user' && entry.type !== 'assistant') continue;
+    const text = extractText(entry.message);
+    if (text === '') continue;
+    messages.push({ role: entry.type, text });
+  }
+  return messages;
+};
