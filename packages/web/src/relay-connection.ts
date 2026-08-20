@@ -48,6 +48,7 @@ export const RPC_ERROR_MESSAGES: Record<RpcErrorCode, string> = {
   [RPC_ERROR_CODES.HANDLER_ERROR]: 'The daemon failed to handle that request.',
   [RPC_ERROR_CODES.INVALID_PROJECT_PATH]: "That project folder couldn't be found. It may have moved or been deleted — try picking again.",
   [RPC_ERROR_CODES.CONCURRENT_SESSION_LIMIT]: "You've reached the limit of concurrent sessions. Stop one before starting another.",
+  [RPC_ERROR_CODES.SESSION_NOT_FOUND]: "That session isn't available to adopt anymore. Try picking another.",
   [RPC_ERROR_CODES.NOT_CONNECTED]: 'Not connected to the relay.',
 };
 

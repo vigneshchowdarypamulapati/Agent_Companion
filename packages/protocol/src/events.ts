@@ -83,5 +83,24 @@ export const SessionEvent = z.discriminatedUnion('type', [
     sessionId: z.string(),
     at: z.number(),
   }),
+  z.object({
+    // Emitted once by the daemon's SessionRunner.adopt() (see session-runner.ts), immediately
+    // after session_started, when a session was created by forking an existing Claude Code
+    // session that was started entirely outside Companion (see docs/superpowers/specs/
+    // 2026-08-20-session-adoption-design.md). `at` here is the event's own emission timestamp,
+    // matching every other SessionEvent variant's convention — it is not a per-message
+    // timestamp; individual historical messages carry none (see the spec for why).
+    type: z.literal('adopted_history'),
+    sessionId: z.string(),
+    originalSessionId: z.string(),
+    messages: z.array(
+      z.object({
+        role: z.enum(['user', 'assistant']),
+        text: z.string(),
+      })
+    ),
+    truncated: z.boolean(),
+    at: z.number(),
+  }),
 ]);
 export type SessionEvent = z.infer<typeof SessionEvent>;

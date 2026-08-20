@@ -26,4 +26,8 @@ describe('RPC_ERROR_CODES', () => {
     expect(RPC_ERROR_CODES.INVALID_PROJECT_PATH).toBe('invalid_project_path');
     expect(RPC_ERROR_CODES.CONCURRENT_SESSION_LIMIT).toBe('concurrent_session_limit');
   });
+
+  it('includes the session-adoption error code', () => {
+    expect(RPC_ERROR_CODES.SESSION_NOT_FOUND).toBe('session_not_found');
+  });
 });

@@ -39,6 +39,12 @@ export const RPC_ERROR_CODES = {
   /** The daemon already has `maxConcurrentSessions` non-stopped sessions running; `start_session`
    * refuses to start another until one stops. See `SessionManager`'s concurrency cap. */
   CONCURRENT_SESSION_LIMIT: 'concurrent_session_limit',
+  /** The `adopt_session` caller gave a `sessionId` that is no longer discoverable under the
+   * given `projectPath` — never existed there, or existed but the underlying transcript file
+   * has since been deleted or moved between the list call and the adopt call. One code covers
+   * both causes, same reasoning as INVALID_PROJECT_PATH: the remedy is identical (re-list, pick
+   * again). */
+  SESSION_NOT_FOUND: 'session_not_found',
   /** Produced entirely client-side, never sent over the wire: the browser has no open socket to
    * the relay at all right now, so there is nothing to route the request through. Distinct from
    * `daemon_disconnected` (relay reachable, daemon isn't) — this is "we can't even ask." */

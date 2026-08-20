@@ -61,4 +61,54 @@ describe('SessionEvent schema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('accepts a valid adopted_history event', () => {
+    const result = SessionEvent.safeParse({
+      type: 'adopted_history',
+      sessionId: 'new-session-1',
+      originalSessionId: 'original-session-1',
+      messages: [
+        { role: 'user', text: 'fix the bug in auth.ts' },
+        { role: 'assistant', text: 'Found it — the token check was inverted.' },
+      ],
+      truncated: false,
+      at: Date.now(),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an adopted_history event with an empty messages array', () => {
+    const result = SessionEvent.safeParse({
+      type: 'adopted_history',
+      sessionId: 'new-session-1',
+      originalSessionId: 'original-session-1',
+      messages: [],
+      truncated: false,
+      at: Date.now(),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an adopted_history event with an invalid message role', () => {
+    const result = SessionEvent.safeParse({
+      type: 'adopted_history',
+      sessionId: 'new-session-1',
+      originalSessionId: 'original-session-1',
+      messages: [{ role: 'system', text: 'not a valid role here' }],
+      truncated: false,
+      at: Date.now(),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an adopted_history event missing truncated', () => {
+    const result = SessionEvent.safeParse({
+      type: 'adopted_history',
+      sessionId: 'new-session-1',
+      originalSessionId: 'original-session-1',
+      messages: [],
+      at: Date.now(),
+    });
+    expect(result.success).toBe(false);
+  });
 });

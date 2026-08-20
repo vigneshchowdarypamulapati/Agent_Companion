@@ -48,5 +48,7 @@ function describeEvent(event: SessionEvent): string {
       return 'Session stopped';
     case 'events_dropped':
       return 'Some activity was lost while disconnected from the relay';
+    case 'adopted_history':
+      return `Adopted ${event.messages.length} messages from previous session${event.truncated ? ' (truncated)' : ''}`;
   }
 }
