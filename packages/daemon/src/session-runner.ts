@@ -14,6 +14,25 @@ import type { SessionEvent, SessionStatus } from '@companion/protocol';
  * docs/superpowers/specs/2026-08-20-session-adoption-design.md. */
 const HISTORY_MESSAGE_CAP = 50;
 
+/** Byte budget for a single adopted_history event's serialized `messages` array — well clear of
+ * the relay's 1 MiB WebSocket frame limit (packages/relay/src/server.ts's maxPayload) even
+ * accounting for JSON envelope overhead. HISTORY_MESSAGE_CAP bounds message *count* only;
+ * message *text* comes from an arbitrary pre-existing transcript this daemon didn't generate and
+ * can be arbitrarily large (e.g. a pasted log or diff) — this budget is what actually prevents
+ * an oversized frame from wedging the daemon's relay connection (see the final-review finding
+ * this fixes: an oversized frame gets the socket closed, and RelayClient's reconnect replays
+ * unacked buffered entries first, hitting the same frame and looping). */
+const MAX_HISTORY_BYTES = 256 * 1024;
+/** Clamps a single oversized historical message so it alone can never blow MAX_HISTORY_BYTES —
+ * without this, one huge pasted turn could exceed the byte budget on its own and leave zero
+ * messages in the final result. */
+const MAX_MESSAGE_CHARS = 20_000;
+
+function clampMessageText(text: string): string {
+  if (text.length <= MAX_MESSAGE_CHARS) return text;
+  return text.slice(0, MAX_MESSAGE_CHARS) + '… [truncated]';
+}
+
 export interface SessionRunnerOptions {
   id: string;
   projectPath: string;
@@ -98,14 +117,41 @@ export class SessionRunner {
 
   private async emitAdoptedHistory(originalSessionId: string): Promise<void> {
     const allMessages = await this.getSessionMessagesFn(originalSessionId, { dir: this.projectPath });
-    const truncated = allMessages.length > HISTORY_MESSAGE_CAP;
-    const messages = allMessages.slice(-HISTORY_MESSAGE_CAP);
+    const truncatedByCount = allMessages.length > HISTORY_MESSAGE_CAP;
+    let truncatedByMessage = false;
+    const clamped = allMessages.slice(-HISTORY_MESSAGE_CAP).map((m) => {
+      if (m.text.length > MAX_MESSAGE_CHARS) truncatedByMessage = true;
+      return { role: m.role, text: clampMessageText(m.text) };
+    });
+
+    // Walk from the most recent message backward, keeping messages while under the byte budget.
+    // This is what actually prevents an oversized WebSocket frame — the count cap alone doesn't.
+    let bytes = 0;
+    let cutoff = clamped.length;
+    for (let i = clamped.length - 1; i >= 0; i--) {
+      bytes += Buffer.byteLength(JSON.stringify(clamped[i]), 'utf8');
+      if (bytes > MAX_HISTORY_BYTES) {
+        cutoff = i + 1;
+        break;
+      }
+      cutoff = i;
+    }
+    const messages = clamped.slice(cutoff);
+    const truncatedBySize = cutoff > 0;
+
+    if (messages.length === 0 && !truncatedByCount && !truncatedBySize && !truncatedByMessage) {
+      // Fix 5 (Minor, bundled here since it's the same method): nothing to show — e.g. the
+      // original session's history was entirely tool-use turns with no extractable text.
+      // Skip emitting an event with an empty "Prior conversation" header and nothing under it.
+      return;
+    }
+
     this.emit({
       type: 'adopted_history',
       sessionId: this.id,
       originalSessionId,
       messages,
-      truncated,
+      truncated: truncatedByCount || truncatedBySize || truncatedByMessage,
       at: Date.now(),
     });
   }

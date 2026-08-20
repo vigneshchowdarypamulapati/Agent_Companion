@@ -597,6 +597,89 @@ describe('SessionRunner.adopt', () => {
     expect((historyEvent as { messages: { text: string }[] }).messages[49].text).toBe('message 59');
   });
 
+  it('clamps a single oversized message to MAX_MESSAGE_CHARS and still emits with truncated: true', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const hugeText = 'x'.repeat(30_000);
+    const getSessionMessagesFn = createMockGetSessionMessagesFn([{ role: 'user', text: hugeText }]);
+    const runner = new SessionRunner({
+      id: 'session-new-1',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      getSessionMessagesFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.adopt('original-session-1');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const historyEvent = events.find((e) => e.type === 'adopted_history') as
+      | { messages: { role: string; text: string }[]; truncated: boolean }
+      | undefined;
+    expect(historyEvent).toBeDefined();
+    expect(historyEvent!.messages).toHaveLength(1);
+    expect(historyEvent!.messages[0].text).toBe('x'.repeat(20_000) + '… [truncated]');
+    expect(historyEvent!.truncated).toBe(true);
+  });
+
+  it('caps history by total byte size, keeping the most recent messages, when combined size exceeds MAX_HISTORY_BYTES', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    // 50 messages x ~10,000 chars each ≈ 500KB, well over the 256KB budget — but each message is
+    // individually well under MAX_MESSAGE_CHARS (20,000), so this exercises the byte-budget walk,
+    // not the per-message clamp.
+    const allMessages = Array.from({ length: 50 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as const,
+      text: `msg-${i}-` + 'y'.repeat(10_000),
+    }));
+    const getSessionMessagesFn = createMockGetSessionMessagesFn(allMessages);
+    const runner = new SessionRunner({
+      id: 'session-new-1',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      getSessionMessagesFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.adopt('original-session-1');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const historyEvent = events.find((e) => e.type === 'adopted_history') as
+      | { messages: { text: string }[]; truncated: boolean }
+      | undefined;
+    expect(historyEvent).toBeDefined();
+    expect(historyEvent!.truncated).toBe(true);
+    expect(historyEvent!.messages.length).toBeLessThan(50);
+    expect(historyEvent!.messages.length).toBeGreaterThan(0);
+    // The kept messages must be the most recent ones — i.e. a contiguous suffix ending at msg-49.
+    const lastKept = historyEvent!.messages[historyEvent!.messages.length - 1].text;
+    expect(lastKept.startsWith('msg-49-')).toBe(true);
+    const firstKeptIndex = allMessages.findIndex((m) => m.text === historyEvent!.messages[0].text);
+    expect(firstKeptIndex).toBeGreaterThan(0);
+    // Verify the total serialized size actually respects the budget.
+    const serializedBytes = Buffer.byteLength(JSON.stringify(historyEvent!.messages), 'utf8');
+    expect(serializedBytes).toBeLessThan(300 * 1024); // MAX_HISTORY_BYTES plus a little slack for JSON array overhead
+  });
+
+  it('emits no adopted_history event when the original session has zero extractable messages', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const getSessionMessagesFn = createMockGetSessionMessagesFn([]);
+    const runner = new SessionRunner({
+      id: 'session-new-1',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      getSessionMessagesFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.adopt('original-session-1');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(events[0]).toMatchObject({ type: 'session_started' });
+    expect(events.every((e) => e.type !== 'adopted_history')).toBe(true);
+  });
+
   it('still processes assistant_text and other live events normally after adopting', async () => {
     const agent = createMockAgent();
     const events: SessionEvent[] = [];
