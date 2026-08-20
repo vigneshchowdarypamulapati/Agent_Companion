@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { getDevice, unpairDevice, type DeviceInfo } from './api/devices';
+import { getDevice, unpairDevice, getDaemonStatus, type DeviceInfo, type DaemonStatus } from './api/devices';
 import { claimPairingCode } from './api/pairing';
 import { UnauthorizedError } from './api/sessions';
 import { getVapidPublicKey } from './api/push';
@@ -19,6 +19,7 @@ export interface SettingsScreenProps {
 
 export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProps) {
   const [device, setDevice] = useState<DeviceInfo | undefined>();
+  const [daemonStatus, setDaemonStatus] = useState<DaemonStatus | undefined>();
   const [loadError, setLoadError] = useState<string | undefined>();
   const [confirming, setConfirming] = useState(false);
   const [unpairError, setUnpairError] = useState<string | undefined>();
@@ -48,6 +49,27 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
           return;
         }
         setLoadError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getDaemonStatus(token)
+      .then((status) => {
+        if (!cancelled) setDaemonStatus(status);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof UnauthorizedError) {
+          onUnpairedRef.current();
+          return;
+        }
+        // Same "fail toward the actionable state" reasoning as SessionList's daemon-status check:
+        // a load failure must not leave the user stuck looking at nothing.
+        setDaemonStatus({ paired: false });
       });
     return () => {
       cancelled = true;
@@ -172,41 +194,68 @@ export default function SettingsScreen({ token, onUnpaired }: SettingsScreenProp
         </div>
       )}
 
-      <form onSubmit={handleClaimPairingCode} className="border-t border-border pt-4 space-y-3">
-        <h2 className="text-sm font-medium text-ink-secondary">Pair a daemon</h2>
-        <p className="text-sm text-ink-muted">
-          Start the Companion daemon on your machine and enter the code it prints (case doesn't matter, and the
-          hyphen is optional).
-        </p>
-        <label htmlFor="pairing-code" className="block text-sm text-ink-muted">
-          Pairing code
-        </label>
-        <input
-          id="pairing-code"
-          name="pairing-code"
-          type="text"
-          inputMode="text"
-          autoComplete="one-time-code"
-          autoCapitalize="characters"
-          maxLength={12}
-          value={pairingCode}
-          onChange={(e) => setPairingCode(e.target.value)}
-          className="w-full rounded-md bg-panel px-3 py-2 tracking-widest"
-        />
-        <button
-          type="submit"
-          disabled={pairBusy || pairingCode.trim().length === 0}
-          className="w-full rounded-md bg-accent hover:bg-accent-hover px-3 py-2 font-medium disabled:opacity-50"
-        >
-          {pairBusy ? 'Pairing…' : 'Pair daemon'}
-        </button>
-        {pairSucceeded && <p className="text-sm text-success-text">Daemon paired!</p>}
-        {pairError && (
-          <p role="alert" className="text-sm text-danger-light">
-            {pairError}
+      {daemonStatus?.paired === true && (
+        <div className="border-t border-border pt-4 space-y-3">
+          <h2 className="text-sm font-medium text-ink-secondary">Daemon</h2>
+          <div className="bg-panel rounded-md p-4 space-y-1">
+            <div className="flex items-center gap-2">
+              <span
+                aria-hidden="true"
+                className={`h-2 w-2 rounded-full ${daemonStatus.connected ? 'bg-success' : 'bg-warning'}`}
+              />
+              <p className="font-medium">{daemonStatus.name}</p>
+            </div>
+            <p className="text-sm text-ink-muted">{daemonStatus.connected ? 'Online' : 'Offline'}</p>
+            <p className="text-sm text-ink-muted">Paired {new Date(daemonStatus.pairedAt).toLocaleDateString()}</p>
+          </div>
+          <button
+            type="button"
+            disabled
+            title="Unpairing the daemon isn't available yet"
+            className="text-sm text-ink-faint underline decoration-dotted disabled:cursor-not-allowed"
+          >
+            Unpair daemon
+          </button>
+        </div>
+      )}
+
+      {daemonStatus?.paired === false && (
+        <form onSubmit={handleClaimPairingCode} className="border-t border-border pt-4 space-y-3">
+          <h2 className="text-sm font-medium text-ink-secondary">Pair a daemon</h2>
+          <p className="text-sm text-ink-muted">
+            Start the Companion daemon on your machine and enter the code it prints (case doesn't matter, and the
+            hyphen is optional).
           </p>
-        )}
-      </form>
+          <label htmlFor="pairing-code" className="block text-sm text-ink-muted">
+            Pairing code
+          </label>
+          <input
+            id="pairing-code"
+            name="pairing-code"
+            type="text"
+            inputMode="text"
+            autoComplete="one-time-code"
+            autoCapitalize="characters"
+            maxLength={12}
+            value={pairingCode}
+            onChange={(e) => setPairingCode(e.target.value)}
+            className="w-full rounded-md bg-panel px-3 py-2 tracking-widest"
+          />
+          <button
+            type="submit"
+            disabled={pairBusy || pairingCode.trim().length === 0}
+            className="w-full rounded-md bg-accent hover:bg-accent-hover px-3 py-2 font-medium disabled:opacity-50"
+          >
+            {pairBusy ? 'Pairing…' : 'Pair daemon'}
+          </button>
+          {pairSucceeded && <p className="text-sm text-success-text">Daemon paired!</p>}
+          {pairError && (
+            <p role="alert" className="text-sm text-danger-light">
+              {pairError}
+            </p>
+          )}
+        </form>
+      )}
 
       {pushAvailable && (
         <div className="border-t border-border pt-4 space-y-3">

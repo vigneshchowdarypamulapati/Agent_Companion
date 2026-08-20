@@ -18,6 +18,19 @@ function renderSettings(token = 'tok-1', onUnpaired = vi.fn()) {
   return onUnpaired;
 }
 
+function mockDeviceLoad() {
+  vi.spyOn(devicesApi, 'getDevice').mockResolvedValue({
+    id: 'dev-1',
+    type: 'browser',
+    name: 'Chrome on Mac',
+    createdAt: 1,
+  });
+}
+
+function mockDaemonStatus(status: Awaited<ReturnType<typeof devicesApi.getDaemonStatus>> = { paired: false }) {
+  vi.spyOn(devicesApi, 'getDaemonStatus').mockResolvedValue(status);
+}
+
 describe('SettingsScreen', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -30,6 +43,7 @@ describe('SettingsScreen', () => {
       name: 'Chrome on Mac',
       createdAt: new Date('2026-01-15').getTime(),
     });
+    mockDaemonStatus();
 
     renderSettings();
 
@@ -40,6 +54,7 @@ describe('SettingsScreen', () => {
 
   it('shows an inline error when loading device info fails', async () => {
     vi.spyOn(devicesApi, 'getDevice').mockRejectedValue(new Error('HTTP 500'));
+    mockDaemonStatus();
 
     renderSettings();
 
@@ -48,6 +63,7 @@ describe('SettingsScreen', () => {
 
   it('calls onUnpaired immediately if loading device info gets a 401', async () => {
     vi.spyOn(devicesApi, 'getDevice').mockRejectedValue(new UnauthorizedError());
+    mockDaemonStatus();
 
     const onUnpaired = renderSettings();
 
@@ -61,6 +77,7 @@ describe('SettingsScreen', () => {
       name: 'Chrome on Mac',
       createdAt: 1,
     });
+    mockDaemonStatus();
     const unpairDevice = vi.spyOn(devicesApi, 'unpairDevice').mockResolvedValue(undefined);
 
     renderSettings();
@@ -79,6 +96,7 @@ describe('SettingsScreen', () => {
       name: 'Chrome on Mac',
       createdAt: 1,
     });
+    mockDaemonStatus();
     vi.spyOn(devicesApi, 'unpairDevice').mockResolvedValue(undefined);
 
     const onUnpaired = renderSettings();
@@ -97,6 +115,7 @@ describe('SettingsScreen', () => {
       name: 'Chrome on Mac',
       createdAt: 1,
     });
+    mockDaemonStatus();
     const unpairDevice = vi.spyOn(devicesApi, 'unpairDevice').mockResolvedValue(undefined);
 
     renderSettings();
@@ -116,6 +135,7 @@ describe('SettingsScreen', () => {
       name: 'Chrome on Mac',
       createdAt: 1,
     });
+    mockDaemonStatus();
     vi.spyOn(devicesApi, 'unpairDevice').mockRejectedValue(new Error('HTTP 500'));
 
     const onUnpaired = renderSettings();
@@ -135,6 +155,7 @@ describe('SettingsScreen', () => {
       name: 'Chrome on Mac',
       createdAt: 1,
     });
+    mockDaemonStatus();
     vi.spyOn(devicesApi, 'unpairDevice').mockRejectedValue(new UnauthorizedError());
 
     const onUnpaired = renderSettings();
@@ -153,6 +174,7 @@ describe('SettingsScreen', () => {
       name: 'Chrome on Mac',
       createdAt: 1,
     });
+    mockDaemonStatus();
 
     renderSettings();
 
@@ -161,17 +183,9 @@ describe('SettingsScreen', () => {
   });
 
   describe('pair a daemon section', () => {
-    function mockDeviceLoad() {
-      vi.spyOn(devicesApi, 'getDevice').mockResolvedValue({
-        id: 'dev-1',
-        type: 'browser',
-        name: 'Chrome on Mac',
-        createdAt: 1,
-      });
-    }
-
     it('submitting a code calls claimPairingCode with this browser token and the code', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       const claim = vi.spyOn(pairingApi, 'claimPairingCode').mockResolvedValue(undefined);
 
       renderSettings();
@@ -185,6 +199,7 @@ describe('SettingsScreen', () => {
 
     it('the submit button is disabled until a code is entered', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
 
       renderSettings();
 
@@ -196,6 +211,7 @@ describe('SettingsScreen', () => {
 
     it('shows a success confirmation and clears the input after a successful claim', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pairingApi, 'claimPairingCode').mockResolvedValue(undefined);
 
       renderSettings();
@@ -210,6 +226,7 @@ describe('SettingsScreen', () => {
 
     it("surfaces the relay's error message when the claim fails", async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pairingApi, 'claimPairingCode').mockRejectedValue(
         new Error('Account already has a paired daemon — unpair it first')
       );
@@ -228,6 +245,7 @@ describe('SettingsScreen', () => {
 
     it('calls onUnpaired if the claim gets a 401', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pairingApi, 'claimPairingCode').mockRejectedValue(new UnauthorizedError());
 
       const onUnpaired = renderSettings();
@@ -241,17 +259,9 @@ describe('SettingsScreen', () => {
   });
 
   describe('notifications section', () => {
-    function mockDeviceLoad() {
-      vi.spyOn(devicesApi, 'getDevice').mockResolvedValue({
-        id: 'dev-1',
-        type: 'browser',
-        name: 'Chrome on Mac',
-        createdAt: 1,
-      });
-    }
-
     it('renders nothing when push is not supported by the browser', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(false);
 
       renderSettings();
@@ -262,6 +272,7 @@ describe('SettingsScreen', () => {
 
     it('renders nothing when the relay has no VAPID key configured', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
       vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue(undefined);
 
@@ -273,6 +284,7 @@ describe('SettingsScreen', () => {
 
     it('shows an Enable button when push is available but not yet subscribed', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
       vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
       vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('default');
@@ -285,6 +297,7 @@ describe('SettingsScreen', () => {
 
     it('shows a Disable button when already subscribed', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
       vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
       vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('granted');
@@ -297,6 +310,7 @@ describe('SettingsScreen', () => {
 
     it('shows a blocked message instead of a button when permission was previously denied', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
       vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
       vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('denied');
@@ -310,6 +324,7 @@ describe('SettingsScreen', () => {
 
     it('enables push notifications and shows the Disable button after clicking Enable', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
       vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
       vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('default');
@@ -326,6 +341,7 @@ describe('SettingsScreen', () => {
 
     it('shows an inline error and does not change state when enabling push fails', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
       vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
       vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('default');
@@ -344,6 +360,7 @@ describe('SettingsScreen', () => {
 
     it('disables push notifications and shows the Enable button after clicking Disable', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
       vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
       vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('granted');
@@ -360,6 +377,7 @@ describe('SettingsScreen', () => {
 
     it('calls onUnpaired if enabling push gets a 401', async () => {
       mockDeviceLoad();
+      mockDaemonStatus();
       vi.spyOn(pushNotifications, 'isPushSupported').mockReturnValue(true);
       vi.spyOn(pushApi, 'getVapidPublicKey').mockResolvedValue('key');
       vi.spyOn(pushNotifications, 'getPermissionState').mockReturnValue('default');
@@ -371,6 +389,57 @@ describe('SettingsScreen', () => {
       await userEvent.click(await screen.findByRole('button', { name: /enable notifications/i }));
 
       await waitFor(() => expect(onUnpaired).toHaveBeenCalled());
+    });
+  });
+
+  describe('daemon status section', () => {
+    it('shows the pairing form when no daemon is paired', async () => {
+      mockDeviceLoad();
+      mockDaemonStatus({ paired: false });
+
+      renderSettings();
+
+      expect(await screen.findByRole('button', { name: /pair daemon/i })).toBeInTheDocument();
+    });
+
+    it('shows daemon name and paired-since date, and hides the pairing form, when paired and connected', async () => {
+      mockDeviceLoad();
+      mockDaemonStatus({ paired: true, name: 'my-laptop', connected: true, pairedAt: new Date('2026-02-01').getTime() });
+
+      renderSettings();
+
+      expect(await screen.findByText('my-laptop')).toBeInTheDocument();
+      expect(screen.getByText(/online/i)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^pair daemon$/i })).not.toBeInTheDocument();
+    });
+
+    it('shows an offline state, without inventing a last-seen timestamp, when paired but disconnected', async () => {
+      mockDeviceLoad();
+      mockDaemonStatus({ paired: true, name: 'my-laptop', connected: false, pairedAt: 1 });
+
+      renderSettings();
+
+      expect(await screen.findByText('my-laptop')).toBeInTheDocument();
+      expect(screen.getByText(/offline/i)).toBeInTheDocument();
+      expect(screen.queryByText(/last seen/i)).not.toBeInTheDocument();
+    });
+
+    it('shows a disabled "Unpair daemon" action when paired — no relay endpoint exists yet to wire it to', async () => {
+      mockDeviceLoad();
+      mockDaemonStatus({ paired: true, name: 'my-laptop', connected: true, pairedAt: 1 });
+
+      renderSettings();
+
+      expect(await screen.findByRole('button', { name: /unpair daemon/i })).toBeDisabled();
+    });
+
+    it('a daemon-status load failure fails toward showing the pairing form, not a stuck loading state', async () => {
+      mockDeviceLoad();
+      vi.spyOn(devicesApi, 'getDaemonStatus').mockRejectedValue(new Error('HTTP 500'));
+
+      renderSettings();
+
+      expect(await screen.findByRole('button', { name: /pair daemon/i })).toBeInTheDocument();
     });
   });
 });
