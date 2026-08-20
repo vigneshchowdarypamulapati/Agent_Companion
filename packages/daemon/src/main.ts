@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { SessionManager, DEFAULT_MAX_CONCURRENT_SESSIONS } from './session-manager.js';
 import { createHttpServer } from './http-server.js';
-import { realQueryFn, realGetSessionMessagesFn } from './real-agent-sdk.js';
+import { realQueryFn, realListSessionsFn, realGetSessionMessagesFn } from './real-agent-sdk.js';
 import { getOrCreateDeviceToken } from './device-auth.js';
 import { getOrCreateLocalToken } from './local-auth.js';
 import { RelayClient } from './relay-client.js';
@@ -258,6 +258,7 @@ export async function main(): Promise<void> {
               manager,
               projectStoreFilePath: PROJECTS_FILE_PATH,
               projectsRoot: PROJECTS_ROOT,
+              listSessionsFn: realListSessionsFn,
             }),
         });
         relayClient.connect();

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,6 +40,7 @@ const baseDeps: RpcHandlerDeps = {
   manager: {} as unknown as SessionManager,
   projectStoreFilePath: '/dev/null/companion-rpc-handlers-test-unused',
   projectsRoot: undefined,
+  listSessionsFn: vi.fn(async () => []),
 };
 
 describe('dispatchRpc', () => {
@@ -114,6 +115,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
         manager,
         projectStoreFilePath: filePath,
         projectsRoot: undefined,
+        listSessionsFn: vi.fn(async () => []),
       });
 
       expect(outcome.result).toEqual([
@@ -141,6 +143,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
         manager,
         projectStoreFilePath: filePath,
         projectsRoot: undefined,
+        listSessionsFn: vi.fn(async () => []),
       });
 
       const paths = (outcome.result as { path: string }[]).map((p) => p.path);
@@ -164,6 +167,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
         manager,
         projectStoreFilePath: filePath,
         projectsRoot,
+        listSessionsFn: vi.fn(async () => []),
       });
 
       expect(outcome.result).toEqual([
@@ -195,6 +199,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
         manager,
         projectStoreFilePath: filePath,
         projectsRoot,
+        listSessionsFn: vi.fn(async () => []),
       });
 
       expect(outcome.result).toEqual([
@@ -224,6 +229,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
         manager,
         projectStoreFilePath: filePath,
         projectsRoot: undefined,
+        listSessionsFn: vi.fn(async () => []),
       });
 
       expect(outcome.error).toBeUndefined();
@@ -252,6 +258,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
         manager,
         projectStoreFilePath: filePath,
         projectsRoot: undefined,
+        listSessionsFn: vi.fn(async () => []),
       });
 
       expect(outcome.result).toBeUndefined();
@@ -287,6 +294,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
         manager,
         projectStoreFilePath: filePath,
         projectsRoot: undefined,
+        listSessionsFn: vi.fn(async () => []),
       });
 
       expect(outcome.result).toBeUndefined();
@@ -328,6 +336,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
         manager,
         projectStoreFilePath: filePath,
         projectsRoot: undefined,
+        listSessionsFn: vi.fn(async () => []),
       });
 
       expect(outcome.result).toBeUndefined();
@@ -356,6 +365,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
         manager,
         projectStoreFilePath: filePath,
         projectsRoot: undefined,
+        listSessionsFn: vi.fn(async () => []),
       });
 
       expect(outcome.error).toBe(RPC_ERROR_CODES.INVALID_PROJECT_PATH);
@@ -377,10 +387,169 @@ describe('rpc-handlers: list_projects / start_session', () => {
         manager,
         projectStoreFilePath: filePath,
         projectsRoot: undefined,
+        listSessionsFn: vi.fn(async () => []),
       });
 
       expect(outcome.error).toBe(RPC_ERROR_CODES.INVALID_PROJECT_PATH);
       expect(outcome.result).toBeUndefined();
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('list_discoverable_sessions', () => {
+  it('returns SESSION_NOT_FOUND — actually INVALID_PROJECT_PATH — for an unknown project path', async () => {
+    const outcome = await dispatchRpc(
+      'list_discoverable_sessions',
+      { projectPath: '/not/a/known/project' },
+      { ...baseDeps, listSessionsFn: vi.fn(async () => []) }
+    );
+    expect(outcome.error).toBe(RPC_ERROR_CODES.INVALID_PROJECT_PATH);
+  });
+
+  it('calls listSessionsFn with includeProgrammatic scoping handled by the fn itself, and returns its result', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'companion-rpc-projects-test-'));
+    const filePath = join(tempDir, 'daemon-projects.json');
+    const projectDir = join(tempDir, 'project');
+    await mkdir(projectDir);
+    try {
+      await recordProjectUsed(projectDir, { filePath });
+      const listSessionsFn = vi.fn(async () => [
+        { sessionId: 'abc', summary: 'Fix bug', firstPrompt: 'fix it', lastModified: 1700000000000 },
+      ]);
+
+      const outcome = await dispatchRpc(
+        'list_discoverable_sessions',
+        { projectPath: projectDir },
+        { ...baseDeps, projectStoreFilePath: filePath, listSessionsFn }
+      );
+
+      expect(listSessionsFn).toHaveBeenCalledWith({ dir: projectDir });
+      expect(outcome.result).toEqual([
+        { sessionId: 'abc', summary: 'Fix bug', firstPrompt: 'fix it', lastModified: 1700000000000 },
+      ]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('adopt_session', () => {
+  it('returns INVALID_PROJECT_PATH for an unknown project path', async () => {
+    const outcome = await dispatchRpc(
+      'adopt_session',
+      { projectPath: '/not/a/known/project', sessionId: 'abc' },
+      { ...baseDeps, listSessionsFn: vi.fn(async () => []) }
+    );
+    expect(outcome.error).toBe(RPC_ERROR_CODES.INVALID_PROJECT_PATH);
+  });
+
+  it('returns SESSION_NOT_FOUND when sessionId is not in a fresh discoverable-sessions call', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'companion-rpc-projects-test-'));
+    const filePath = join(tempDir, 'daemon-projects.json');
+    const projectDir = join(tempDir, 'project');
+    await mkdir(projectDir);
+    try {
+      await recordProjectUsed(projectDir, { filePath });
+      const listSessionsFn = vi.fn(async () => []);
+
+      const outcome = await dispatchRpc(
+        'adopt_session',
+        { projectPath: projectDir, sessionId: 'nonexistent' },
+        { ...baseDeps, projectStoreFilePath: filePath, listSessionsFn }
+      );
+
+      expect(outcome.error).toBe(RPC_ERROR_CODES.SESSION_NOT_FOUND);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('adopts a valid, currently-discoverable session and returns its id/status', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'companion-rpc-projects-test-'));
+    const filePath = join(tempDir, 'daemon-projects.json');
+    const projectDir = join(tempDir, 'project');
+    await mkdir(projectDir);
+    try {
+      await recordProjectUsed(projectDir, { filePath });
+      const listSessionsFn = vi.fn(async () => [
+        { sessionId: 'abc', summary: 'Fix bug', firstPrompt: 'fix it', lastModified: 1700000000000 },
+      ]);
+      const manager = new SessionManager({
+        queryFn: createMockQueryFn(),
+        getSessionMessagesFn: vi.fn(async () => []),
+        onEvent: () => {},
+        projectStoreFilePath: filePath,
+      });
+
+      const outcome = await dispatchRpc(
+        'adopt_session',
+        { projectPath: projectDir, sessionId: 'abc' },
+        { ...baseDeps, manager, projectStoreFilePath: filePath, listSessionsFn }
+      );
+
+      expect(outcome.result).toMatchObject({ status: 'running' });
+      expect((outcome.result as { id: string }).id).toBeTruthy();
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('maps a cap-exceeded adoptSession failure to CONCURRENT_SESSION_LIMIT', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'companion-rpc-projects-test-'));
+    const filePath = join(tempDir, 'daemon-projects.json');
+    const projectDir = join(tempDir, 'project');
+    await mkdir(projectDir);
+    try {
+      await recordProjectUsed(projectDir, { filePath });
+      const listSessionsFn = vi.fn(async () => [
+        { sessionId: 'abc', summary: 'Fix bug', firstPrompt: 'fix it', lastModified: 1700000000000 },
+      ]);
+      const manager = new SessionManager({
+        queryFn: createMockQueryFn(),
+        getSessionMessagesFn: vi.fn(async () => []),
+        onEvent: () => {},
+        projectStoreFilePath: filePath,
+        maxConcurrentSessions: 0,
+      });
+
+      const outcome = await dispatchRpc(
+        'adopt_session',
+        { projectPath: projectDir, sessionId: 'abc' },
+        { ...baseDeps, manager, projectStoreFilePath: filePath, listSessionsFn }
+      );
+
+      expect(outcome.error).toBe(RPC_ERROR_CODES.CONCURRENT_SESSION_LIMIT);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns HANDLER_ERROR (not SESSION_NOT_FOUND or CONCURRENT_SESSION_LIMIT) for a genuine adopt crash', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'companion-rpc-projects-test-'));
+    const filePath = join(tempDir, 'daemon-projects.json');
+    const projectDir = join(tempDir, 'project');
+    await mkdir(projectDir);
+    try {
+      await recordProjectUsed(projectDir, { filePath });
+      const listSessionsFn = vi.fn(async () => [
+        { sessionId: 'abc', summary: 'Fix bug', firstPrompt: 'fix it', lastModified: 1700000000000 },
+      ]);
+      const manager = new SessionManager({
+        queryFn: createThrowingQueryFn(),
+        getSessionMessagesFn: vi.fn(async () => []),
+        onEvent: () => {},
+        projectStoreFilePath: filePath,
+      });
+
+      const outcome = await dispatchRpc(
+        'adopt_session',
+        { projectPath: projectDir, sessionId: 'abc' },
+        { ...baseDeps, manager, projectStoreFilePath: filePath, listSessionsFn }
+      );
+
+      expect(outcome.error).toBe(RPC_ERROR_CODES.HANDLER_ERROR);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

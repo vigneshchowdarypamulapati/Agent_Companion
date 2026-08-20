@@ -3,6 +3,7 @@ import { basename, join } from 'node:path';
 import { RPC_ERROR_CODES, type RpcErrorCode } from '@companion/protocol';
 import type { SessionManager } from './session-manager.js';
 import { listKnownProjects } from './project-store.js';
+import type { ListSessionsFn, DiscoveredSession } from './agent-sdk-port.js';
 
 export interface RpcHandlerDeps {
   /** The daemon's own version string (from package.json), reported by `ping`. */
@@ -21,6 +22,9 @@ export interface RpcHandlerDeps {
   /** COMPANION_PROJECTS_ROOT, if set. One directory; its immediate subdirectories are offered as
    * startable even with no session history. */
   projectsRoot: string | undefined;
+  /** Needed by list_discoverable_sessions and adopt_session to enumerate sessions Claude Code
+   * knows about for a project that this daemon did not itself spawn. */
+  listSessionsFn: ListSessionsFn;
 }
 
 export type RpcHandler = (params: unknown, deps: RpcHandlerDeps) => unknown | Promise<unknown>;
@@ -113,6 +117,20 @@ function isStartSessionParams(params: unknown): params is StartSessionParams {
   );
 }
 
+interface AdoptSessionParams {
+  projectPath: string;
+  sessionId: string;
+}
+
+function isAdoptSessionParams(params: unknown): params is AdoptSessionParams {
+  return (
+    typeof params === 'object' &&
+    params !== null &&
+    typeof (params as AdoptSessionParams).projectPath === 'string' &&
+    typeof (params as AdoptSessionParams).sessionId === 'string'
+  );
+}
+
 /**
  * The daemon's RPC method registry: method name -> handler.
  *
@@ -149,6 +167,47 @@ const REGISTRY: Record<string, RpcHandler> = {
       // without an rpcCode marker so dispatchRpc's own catch falls through to its generic
       // HANDLER_ERROR translation, rather than this handler mislabeling an unrelated crash as
       // "you're at the concurrent session limit" and pointing the user at the wrong remedy.
+      throw err;
+    }
+  },
+  list_discoverable_sessions: async (params, deps): Promise<DiscoveredSession[]> => {
+    if (
+      typeof params !== 'object' ||
+      params === null ||
+      typeof (params as { projectPath?: unknown }).projectPath !== 'string'
+    ) {
+      throw Object.assign(new Error('invalid list_discoverable_sessions params'), {
+        rpcCode: RPC_ERROR_CODES.INVALID_PROJECT_PATH,
+      });
+    }
+    const { projectPath } = params as { projectPath: string };
+    const known = await resolveKnownProjects(deps);
+    if (!known.some((p) => p.path === projectPath)) {
+      throw Object.assign(new Error('invalid project path'), { rpcCode: RPC_ERROR_CODES.INVALID_PROJECT_PATH });
+    }
+    return deps.listSessionsFn({ dir: projectPath });
+  },
+  adopt_session: async (params, deps): Promise<{ id: string; status: string }> => {
+    if (!isAdoptSessionParams(params)) {
+      throw Object.assign(new Error('invalid adopt_session params'), {
+        rpcCode: RPC_ERROR_CODES.INVALID_PROJECT_PATH,
+      });
+    }
+    const known = await resolveKnownProjects(deps);
+    if (!known.some((p) => p.path === params.projectPath)) {
+      throw Object.assign(new Error('invalid project path'), { rpcCode: RPC_ERROR_CODES.INVALID_PROJECT_PATH });
+    }
+    const discoverable = await deps.listSessionsFn({ dir: params.projectPath });
+    if (!discoverable.some((s) => s.sessionId === params.sessionId)) {
+      throw Object.assign(new Error('session not found'), { rpcCode: RPC_ERROR_CODES.SESSION_NOT_FOUND });
+    }
+    try {
+      const runner = deps.manager.adoptSession(params.projectPath, params.sessionId);
+      return { id: runner.id, status: runner.status };
+    } catch (err) {
+      if (err instanceof Error && (err as Error & { isCapExceeded?: boolean }).isCapExceeded) {
+        throw Object.assign(new Error(err.message), { rpcCode: RPC_ERROR_CODES.CONCURRENT_SESSION_LIMIT });
+      }
       throw err;
     }
   },
