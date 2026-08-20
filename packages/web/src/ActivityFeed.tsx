@@ -12,10 +12,28 @@ export default function ActivityFeed({ events }: ActivityFeedProps) {
     <ul className="space-y-2">
       {events.map((event, index) => (
         <li key={index} className="text-sm bg-panel rounded-md px-3 py-2">
-          {describeEvent(event)}
+          {event.type === 'adopted_history' ? <AdoptedHistoryBlock event={event} /> : describeEvent(event)}
         </li>
       ))}
     </ul>
+  );
+}
+
+function AdoptedHistoryBlock({ event }: { event: Extract<SessionEvent, { type: 'adopted_history' }> }) {
+  return (
+    <div className="space-y-1 border-l-2 border-border pl-2">
+      <p className="text-xs font-medium text-ink-faint uppercase tracking-wide">Prior conversation</p>
+      {event.truncated && (
+        <p className="text-xs text-ink-faint italic">Showing the most recent 50 messages of a longer conversation</p>
+      )}
+      <ul className="space-y-1">
+        {event.messages.map((message, index) => (
+          <li key={index} className="text-sm text-ink-muted">
+            <span className="font-medium">{message.role === 'user' ? 'You' : 'Claude'}:</span> {message.text}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -49,6 +67,8 @@ function describeEvent(event: SessionEvent): string {
     case 'events_dropped':
       return 'Some activity was lost while disconnected from the relay';
     case 'adopted_history':
-      return `Adopted ${event.messages.length} messages from previous session${event.truncated ? ' (truncated)' : ''}`;
+      // Never reached — the .map() above renders AdoptedHistoryBlock for this type before
+      // describeEvent is ever called on it. Exists only so this switch stays exhaustive.
+      return `Resumed from an earlier session (${event.messages.length} prior messages)`;
   }
 }
