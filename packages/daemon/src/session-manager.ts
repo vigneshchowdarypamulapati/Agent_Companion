@@ -59,6 +59,13 @@ export class SessionManager {
       id,
       projectPath,
       queryFn: this.queryFn,
+      // startSession() only ever calls runner.start(), never runner.adopt(), so this never
+      // actually runs — it exists solely to satisfy SessionRunnerOptions' required field.
+      // SessionManager.adoptSession (a later project task) threads a real getSessionMessagesFn
+      // through SessionManagerOptions and replaces this stub, mirroring how projectStoreFilePath
+      // became a required, always-threaded SessionManagerOptions field even though not every
+      // operation reads it.
+      getSessionMessagesFn: async () => [],
       onEvent: (event) => {
         // A stopped session is removed here, not merely excluded from some separate "active" set.
         // Before this fix, SessionManager never removed a finished session from `this.sessions` at

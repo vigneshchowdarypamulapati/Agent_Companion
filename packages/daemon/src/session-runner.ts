@@ -2,16 +2,23 @@ import { AsyncQueue } from './async-queue.js';
 import type {
   AgentMessage,
   AgentQuery,
+  GetSessionMessagesFn,
   PermissionRequest,
   PermissionResponse,
   QueryFn,
 } from './agent-sdk-port.js';
 import type { SessionEvent, SessionStatus } from '@companion/protocol';
 
+/** Most recent N prior messages carried into an adopted session's `adopted_history` event.
+ * Bounded for the same reason every other cap in this codebase is bounded — see
+ * docs/superpowers/specs/2026-08-20-session-adoption-design.md. */
+const HISTORY_MESSAGE_CAP = 50;
+
 export interface SessionRunnerOptions {
   id: string;
   projectPath: string;
   queryFn: QueryFn;
+  getSessionMessagesFn: GetSessionMessagesFn;
   onEvent: (event: SessionEvent) => void;
 }
 
@@ -19,6 +26,7 @@ export class SessionRunner {
   readonly id: string;
   private readonly projectPath: string;
   private readonly queryFn: QueryFn;
+  private readonly getSessionMessagesFn: GetSessionMessagesFn;
   private readonly onEvent: (event: SessionEvent) => void;
   private inputQueue = new AsyncQueue<{ type: 'user'; text: string }>();
   private agentQuery: AgentQuery | undefined;
@@ -29,6 +37,7 @@ export class SessionRunner {
     this.id = options.id;
     this.projectPath = options.projectPath;
     this.queryFn = options.queryFn;
+    this.getSessionMessagesFn = options.getSessionMessagesFn;
     this.onEvent = options.onEvent;
   }
 
@@ -52,6 +61,53 @@ export class SessionRunner {
       at: Date.now(),
     });
     void this.drainMessages();
+  }
+
+  /**
+   * Starts a session by forking an existing, externally-started Claude Code session rather than
+   * beginning a brand-new one. Structurally mirrors `start()` — same query construction, same
+   * session_started emission, same drainMessages() loop — with two differences: no initial
+   * prompt is pushed (the user lands in the session free to type whenever), and the original
+   * session's prior conversation is fetched once and emitted as a single adopted_history event
+   * right after session_started.
+   */
+  adopt(originalSessionId: string): void {
+    this.agentQuery = this.queryFn({
+      prompt: this.inputQueue,
+      options: {
+        cwd: this.projectPath,
+        canUseTool: (request) => this.handlePermissionRequest(request),
+        sessionId: this.id,
+        resumeSessionId: originalSessionId,
+      },
+    });
+    this.emit({
+      type: 'session_started',
+      sessionId: this.id,
+      projectPath: this.projectPath,
+      at: Date.now(),
+    });
+    void this.emitAdoptedHistory(originalSessionId).catch(() => {
+      // History delivery is best-effort: a failed fetch (e.g. the original transcript file was
+      // deleted between adopt_session's re-validation and this call) must not crash or block
+      // the now-live adopted session. The session proceeds with no prior-conversation context
+      // shown, which is a strictly worse UX than showing it, never a broken one.
+    });
+    void this.drainMessages();
+  }
+
+  private async emitAdoptedHistory(originalSessionId: string): Promise<void> {
+    const allMessages = await this.getSessionMessagesFn(originalSessionId, { dir: this.projectPath });
+    const truncated = allMessages.length > HISTORY_MESSAGE_CAP;
+    const messages = allMessages.slice(-HISTORY_MESSAGE_CAP);
+    this.emit({
+      type: 'adopted_history',
+      sessionId: this.id,
+      originalSessionId,
+      messages,
+      truncated,
+      at: Date.now(),
+    });
   }
 
   injectPrompt(text: string): void {

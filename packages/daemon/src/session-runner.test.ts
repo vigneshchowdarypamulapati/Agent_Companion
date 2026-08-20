@@ -48,6 +48,7 @@ describe('SessionRunner', () => {
       id: 'session-1',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -66,6 +67,7 @@ describe('SessionRunner', () => {
       id: 'session-2',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -102,6 +104,7 @@ describe('SessionRunner', () => {
       id: 'session-3',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: () => {},
     });
 
@@ -119,6 +122,7 @@ describe('SessionRunner', () => {
       id: 'session-15',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -136,6 +140,7 @@ describe('SessionRunner', () => {
       id: 'session-16',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -157,6 +162,7 @@ describe('SessionRunner', () => {
       id: 'session-4',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: () => {},
     });
 
@@ -180,6 +186,7 @@ describe('SessionRunner', () => {
       id: 'session-5',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -204,6 +211,7 @@ describe('SessionRunner', () => {
       id: 'session-6',
       projectPath: '/tmp/project',
       queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -222,6 +230,7 @@ describe('SessionRunner', () => {
       id: 'session-7',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: () => {},
     });
 
@@ -238,6 +247,7 @@ describe('SessionRunner', () => {
       id: 'session-8',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -277,6 +287,7 @@ describe('SessionRunner', () => {
       id: 'session-9',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -309,6 +320,7 @@ describe('SessionRunner', () => {
       id: 'session-10',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: () => {},
     });
 
@@ -325,6 +337,7 @@ describe('SessionRunner', () => {
       id: 'session-13',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: () => {},
     });
 
@@ -369,6 +382,7 @@ describe('SessionRunner', () => {
       id: 'session-11',
       projectPath: '/tmp/project',
       queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -414,6 +428,7 @@ describe('SessionRunner', () => {
       id: 'session-14',
       projectPath: '/tmp/project',
       queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -446,6 +461,7 @@ describe('SessionRunner', () => {
       id: 'session-12',
       projectPath: '/tmp/project',
       queryFn: agent.queryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
     });
 
@@ -463,5 +479,141 @@ describe('SessionRunner', () => {
     expect(stoppedEventsAfterFirstStop).toBe(1);
     expect(stoppedEventsAfterSecondStop).toBe(1);
     expect(agent.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+function createMockGetSessionMessagesFn(messages: { role: 'user' | 'assistant'; text: string }[]) {
+  return vi.fn(async () => messages);
+}
+
+describe('SessionRunner.adopt', () => {
+  it('emits session_started with no prompt pushed to the input queue', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const getSessionMessagesFn = createMockGetSessionMessagesFn([]);
+    const runner = new SessionRunner({
+      id: 'session-new-1',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      getSessionMessagesFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.adopt('original-session-1');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(events[0]).toMatchObject({
+      type: 'session_started',
+      sessionId: 'session-new-1',
+      projectPath: '/tmp/project',
+    });
+    // If adopt() had pushed an initial prompt the way start() does, it would be the first item
+    // this iterator yields. Push a sentinel now via the runner's own public injectPrompt() and
+    // confirm the sentinel — not some earlier prompt — is what comes out first, proving the
+    // queue was genuinely empty when adopt() ran (not just asserting on a runtime race).
+    runner.injectPrompt('sentinel');
+    const iterator = agent.getPrompt()[Symbol.asyncIterator]();
+    const { value } = await iterator.next();
+    expect(value).toEqual({ type: 'user', text: 'sentinel' });
+  });
+
+  it('passes sessionId and resumeSessionId through to queryFn', async () => {
+    const agent = createMockAgent();
+    const getSessionMessagesFn = createMockGetSessionMessagesFn([]);
+    let capturedOptions: { sessionId?: string; resumeSessionId?: string } = {};
+    const capturingQueryFn: QueryFn = (args) => {
+      capturedOptions = args.options;
+      return agent.queryFn(args);
+    };
+    const runner = new SessionRunner({
+      id: 'session-new-1',
+      projectPath: '/tmp/project',
+      queryFn: capturingQueryFn,
+      getSessionMessagesFn,
+      onEvent: () => {},
+    });
+
+    runner.adopt('original-session-1');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(capturedOptions.sessionId).toBe('session-new-1');
+    expect(capturedOptions.resumeSessionId).toBe('original-session-1');
+  });
+
+  it('fetches history and emits one adopted_history event after session_started', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const getSessionMessagesFn = createMockGetSessionMessagesFn([
+      { role: 'user', text: 'fix the bug in auth.ts' },
+      { role: 'assistant', text: 'Found it — the token check was inverted.' },
+    ]);
+    const runner = new SessionRunner({
+      id: 'session-new-1',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      getSessionMessagesFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.adopt('original-session-1');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(getSessionMessagesFn).toHaveBeenCalledWith('original-session-1', { dir: '/tmp/project' });
+    expect(events[1]).toMatchObject({
+      type: 'adopted_history',
+      sessionId: 'session-new-1',
+      originalSessionId: 'original-session-1',
+      messages: [
+        { role: 'user', text: 'fix the bug in auth.ts' },
+        { role: 'assistant', text: 'Found it — the token check was inverted.' },
+      ],
+      truncated: false,
+    });
+  });
+
+  it('caps history to the most recent 50 messages and sets truncated: true', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const allMessages = Array.from({ length: 60 }, (_, i) => ({
+      role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      text: `message ${i}`,
+    }));
+    const getSessionMessagesFn = createMockGetSessionMessagesFn(allMessages);
+    const runner = new SessionRunner({
+      id: 'session-new-1',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      getSessionMessagesFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.adopt('original-session-1');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const historyEvent = events.find((e) => e.type === 'adopted_history');
+    expect(historyEvent).toMatchObject({ truncated: true });
+    expect((historyEvent as { messages: unknown[] }).messages).toHaveLength(50);
+    expect((historyEvent as { messages: { text: string }[] }).messages[0].text).toBe('message 10');
+    expect((historyEvent as { messages: { text: string }[] }).messages[49].text).toBe('message 59');
+  });
+
+  it('still processes assistant_text and other live events normally after adopting', async () => {
+    const agent = createMockAgent();
+    const events: SessionEvent[] = [];
+    const getSessionMessagesFn = createMockGetSessionMessagesFn([]);
+    const runner = new SessionRunner({
+      id: 'session-new-1',
+      projectPath: '/tmp/project',
+      queryFn: agent.queryFn,
+      getSessionMessagesFn,
+      onEvent: (e) => events.push(e),
+    });
+
+    runner.adopt('original-session-1');
+    await new Promise((resolve) => setImmediate(resolve));
+    agent.outgoing.push({ type: 'assistant_text', text: 'How can I help?' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(events.some((e) => e.type === 'assistant_text' && e.text === 'How can I help?')).toBe(true);
   });
 });
