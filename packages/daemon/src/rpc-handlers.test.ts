@@ -492,6 +492,12 @@ describe('adopt_session', () => {
       expect(outcome.result).toMatchObject({ status: 'running' });
       expect((outcome.result as { id: string }).id).toBeTruthy();
     } finally {
+      // adoptSession's success path triggers the same fire-and-forget recordProjectUsed write
+      // startSession does (session-manager.ts) — wait for it to settle before removing tempDir,
+      // or the write's mkdir/writeFile can recreate part of the directory after rm's walk has
+      // already passed it, causing an intermittent ENOTEMPTY (see the start_session tests' same
+      // comment above).
+      await whenProjectStoreIdle();
       await rm(tempDir, { recursive: true, force: true });
     }
   });
