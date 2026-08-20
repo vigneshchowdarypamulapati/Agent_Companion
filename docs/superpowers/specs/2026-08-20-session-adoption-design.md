@@ -130,19 +130,39 @@ New method `adopt(originalSessionId: string): void`, parallel to `start(initialP
 - Emits `session_started` exactly as `start()` does (same event, same fields) — an adopted
   session is a `session_started` from the mobile app's point of view; it doesn't need a
   separate top-level status.
-- Immediately after, fetches the original transcript
-  (`getSessionMessages(originalSessionId, { dir: projectPath, limit: HISTORY_MESSAGE_CAP })`,
-  `HISTORY_MESSAGE_CAP = 50` — bounded for the same reason every other cap in this codebase is
-  bounded: an unbounded fetch/event/storage cost from a single user action is not acceptable).
+- Immediately after, fetches the original transcript via
+  `getSessionMessages(originalSessionId, { dir: projectPath })` — **no `limit`/`offset`
+  passed**. The SDK's own doc comment for `getSessionMessages` says it returns messages "in
+  chronological order" and `limit`/`offset` are plain array slicing from the *start*, so
+  passing `limit: 50` would return the oldest 50 messages of a long conversation, not the most
+  recent ones — the opposite of what's useful here. Instead: fetch the full array, then take
+  the most recent `HISTORY_MESSAGE_CAP` (= 50, exact value) via `messages.slice(-50)` in the
+  daemon's own code, with `truncated = messages.length > 50` computed from the real
+  pre-slice length.
+
   Maps the SDK's messages into a minimal shape (protocol-owned, not the SDK's own message
   type, to avoid leaking SDK-internal shapes into the shared protocol package):
   ```typescript
   interface AdoptedHistoryMessage {
     role: 'user' | 'assistant';
     text: string;
-    at: number;
   }
   ```
+  **No `at`/timestamp field** — confirmed by reading the SDK's `SessionMessage` type
+  (`sdk.d.ts`) directly: it carries no per-message timestamp (`type`, `uuid`, `session_id`,
+  `message: unknown`, `parent_tool_use_id`, `parent_agent_id` only), so a per-message `at`
+  cannot be honestly sourced. This isn't a loss for the UI as designed: these messages render
+  once, together, inside a single "Prior conversation" block in the array's own chronological
+  order (which `getSessionMessages` already guarantees) — they are never interleaved on a
+  timeline with live events, so no timestamp is actually needed to render them correctly.
+  Only `type === 'user' | 'assistant'` entries are mapped (system entries dropped); each
+  entry's `message` field is `unknown` on the wire, exactly like the live stream's `SDKMessage`
+  union, so extract text the same defensive way `real-agent-sdk.ts`'s existing
+  `translateSdkMessage` already does for live messages: treat `message.message` as
+  `{content?: unknown}`, filter `content` (if an array) to blocks where
+  `block.type === 'text'`, join their `text` fields. An entry that yields no text after
+  extraction (e.g. a turn that was pure tool-use) is skipped, not emitted as a blank line.
+
   Non-text content (tool calls/results) in the historical transcript is dropped for this
   summary — the goal is "enough context to recognize what was being worked on," not a
   byte-perfect replay. Emits one `adopted_history` event (new `SessionEvent` variant, see
@@ -178,13 +198,15 @@ z.object({
     z.object({
       role: z.enum(['user', 'assistant']),
       text: z.string(),
-      at: z.number(),
     })
   ),
   truncated: z.boolean(),
   at: z.number(),
 }),
 ```
+(`at` here is the *event's* own timestamp — when the daemon emitted this adoption summary —
+matching every other `SessionEvent` variant's convention. It is not a per-message timestamp;
+see the daemon-changes section above for why individual messages don't carry one.)
 
 ## Relay changes
 
