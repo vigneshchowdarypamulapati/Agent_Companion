@@ -658,17 +658,14 @@ describe('SessionRunner.adopt', () => {
       sessionId: 'session-new-1',
       projectPath: '/tmp/project',
     });
-    // No initial prompt: the mock agent's captured prompt iterable should yield nothing when
-    // the queue is closed with nothing ever pushed to it.
-    const pushed: unknown[] = [];
+    // If adopt() had pushed an initial prompt the way start() does, it would be the first item
+    // this iterator yields. Push a sentinel now via the runner's own public injectPrompt() and
+    // confirm the sentinel — not some earlier prompt — is what comes out first, proving the
+    // queue was genuinely empty when adopt() ran (not just asserting on a runtime race).
+    runner.injectPrompt('sentinel');
     const iterator = agent.getPrompt()[Symbol.asyncIterator]();
-    // Not awaiting iterator.next() here (it would hang forever on an open, empty queue) —
-    // instead assert indirectly via the queryFn call: confirm the runner constructed the query
-    // with sessionId/resumeSessionId set (checked in the next test) and that no separate
-    // "initial prompt" step is possible for adopt() by construction (start() is the only method
-    // that ever calls inputQueue.push for an initial prompt; adopt() never does — inspect the
-    // implementation, not runtime timing, for this guarantee).
-    expect(pushed).toEqual([]);
+    const { value } = await iterator.next();
+    expect(value).toEqual({ type: 'user', text: 'sentinel' });
   });
 
   it('passes sessionId and resumeSessionId through to queryFn', async () => {
