@@ -110,8 +110,14 @@ describe('StartSessionSheet — session discovery', () => {
     await userEvent.click(await screen.findByRole('button', { name: /companion/ }));
 
     expect(await screen.findByRole('button', { name: /fix the auth bug/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /refactor the api layer/i })).toBeInTheDocument();
+    const refactorRow = screen.getByRole('button', { name: /refactor the api layer/i });
+    expect(refactorRow).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /start a new session instead/i })).toBeInTheDocument();
+
+    // "Refactor the API layer" has firstPrompt: undefined — it must not render an empty,
+    // layout-occupying <p> for it. Only the row with a real firstPrompt gets that paragraph.
+    expect(screen.getByText('fix the bug in auth.ts')).toBeInTheDocument();
+    expect(refactorRow.querySelectorAll('p')).toHaveLength(1); // just the "Last active …" line
   });
 
   it('"start a new session instead" leads to the normal prompt step', async () => {
@@ -158,5 +164,53 @@ describe('StartSessionSheet — session discovery', () => {
     await userEvent.click(await screen.findByRole('button', { name: /companion/ }));
 
     expect(await screen.findByRole('textbox', { name: /what should claude do/i })).toBeInTheDocument();
+  });
+
+  it('a failed adopt_session shows the real error message and stays on the choosing-session step', async () => {
+    mockCallDaemon(async (method) => {
+      if (method === 'list_projects') return oneProject;
+      if (method === 'list_discoverable_sessions') return twoDiscoveredSessions;
+      if (method === 'adopt_session') {
+        throw new RpcError(RPC_ERROR_CODES.SESSION_NOT_FOUND, "That session isn't available to adopt anymore. Try picking another.");
+      }
+      throw new Error('unexpected method');
+    });
+    renderSheet();
+
+    await userEvent.click(await screen.findByRole('button', { name: /companion/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /fix the auth bug/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "That session isn't available to adopt anymore. Try picking another."
+    );
+    // Must NOT have silently navigated to the fresh-prompt step — the discovered-session rows
+    // (and "start a new session instead") should still be visible so the user can retry or bail.
+    expect(screen.queryByRole('textbox', { name: /what should claude do/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /refactor the api layer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /start a new session instead/i })).toBeInTheDocument();
+  });
+
+  it('disables discovered-session rows and the "start new" button while an adopt is in flight', async () => {
+    let resolveAdopt: ((value: unknown) => void) | undefined;
+    mockCallDaemon(async (method) => {
+      if (method === 'list_projects') return oneProject;
+      if (method === 'list_discoverable_sessions') return twoDiscoveredSessions;
+      if (method === 'adopt_session') {
+        return new Promise((resolve) => {
+          resolveAdopt = resolve;
+        });
+      }
+      throw new Error('unexpected method');
+    });
+    renderSheet();
+
+    await userEvent.click(await screen.findByRole('button', { name: /companion/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /fix the auth bug/i }));
+
+    expect(await screen.findByRole('button', { name: /fix the auth bug/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /refactor the api layer/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /start a new session instead/i })).toBeDisabled();
+
+    resolveAdopt!({ id: 'forked-session-1', status: 'running' });
   });
 });

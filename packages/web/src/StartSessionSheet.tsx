@@ -100,52 +100,113 @@ export default function StartSessionSheet({ onStarted, onClose }: StartSessionSh
         {phase.step === 'checking-sessions' && <p className="text-ink-muted">Checking for existing sessions…</p>}
 
         {phase.step === 'choosing-session' && (
-          <div className="space-y-3">
-            <p className="text-sm text-ink-muted">
-              Found {phase.sessions.length} existing session{phase.sessions.length === 1 ? '' : 's'} in{' '}
-              {phase.project.displayName}
-            </p>
-            <ul className="space-y-1 max-h-64 overflow-y-auto">
-              {phase.sessions.map((session) => (
-                <li key={session.sessionId}>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      callDaemon('adopt_session', { projectPath: phase.project.path, sessionId: session.sessionId })
-                        .then((result) => {
-                          const { id } = result as { id: string; status: string };
-                          onStarted(id);
-                        })
-                        .catch(() => {
-                          // Falls back to the fresh-start prompt on a failed adopt, same fail-toward-
-                          // actionable-state reasoning used throughout this app — never leaves the user
-                          // stuck on a dead-end tap.
-                          setPhase({ step: 'prompting', project: phase.project });
-                        })
-                    }
-                    className="w-full text-left rounded-md bg-panel hover:bg-border px-3 py-2"
-                  >
-                    <span className="font-medium">{session.summary}</span>
-                    <p className="text-xs text-ink-faint truncate">{session.firstPrompt}</p>
-                    <p className="text-xs text-ink-muted">Last active {formatRelativeTime(session.lastModified)}</p>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <button
-              type="button"
-              onClick={() => setPhase({ step: 'prompting', project: phase.project })}
-              className="w-full text-left rounded-md bg-panel hover:bg-border px-3 py-2 text-sm text-ink-muted underline"
-            >
-              Start a new session instead
-            </button>
-          </div>
+          <ChoosingSessionStep
+            project={phase.project}
+            sessions={phase.sessions}
+            callDaemon={callDaemon}
+            onStarted={onStarted}
+            onStartNew={() => setPhase({ step: 'prompting', project: phase.project })}
+          />
         )}
 
         {phase.step === 'prompting' && (
           <PromptStep project={phase.project} callDaemon={callDaemon} onStarted={onStarted} />
         )}
       </div>
+    </div>
+  );
+}
+
+interface ChoosingSessionStepProps {
+  project: ProjectListEntry;
+  sessions: DiscoveredSession[];
+  callDaemon: (method: string, params?: unknown) => Promise<unknown>;
+  onStarted: (sessionId: string) => void;
+  onStartNew: () => void;
+}
+
+/**
+ * `adopt_session` is 'idle' | 'pending' — analogous to `PromptStep`'s `text`/{@link SubmitState}. */
+type AdoptState =
+  | { phase: 'idle' }
+  | { phase: 'pending'; sessionId: string }
+  | { phase: 'error'; sessionId: string; message: string };
+
+/**
+ * Owns the choosing-session phase end to end, mirroring `PromptStep`'s self-contained
+ * pending/error lifecycle below. Two things fall out of that mirroring for free:
+ *
+ * - A failed `adopt_session` call (e.g. SESSION_NOT_FOUND because the original session vanished
+ *   between discovery and the tap) surfaces its real message via a `role="alert"` element and
+ *   stays on this phase — the user can retry a different row or fall back to "start a new session
+ *   instead". It never silently teleports to a blank prompt step the way the old inline
+ *   `.catch(() => setPhase(...))` did, which made the whole point of a distinct SESSION_NOT_FOUND
+ *   message dead code.
+ * - `pending` disables every row and the "start new" button and shows "Starting…" on the row
+ *   being adopted, closing the same double-tap hazard `PromptStep`'s submit button already
+ *   guards against: without it, a double-tap fires two `adopt_session` calls, forks two sessions,
+ *   and orphans the second one silently.
+ */
+function ChoosingSessionStep({ project, sessions, callDaemon, onStarted, onStartNew }: ChoosingSessionStepProps) {
+  const [adoptState, setAdoptState] = useState<AdoptState>({ phase: 'idle' });
+
+  const pending = adoptState.phase === 'pending';
+
+  function adopt(sessionId: string) {
+    if (pending) return;
+    setAdoptState({ phase: 'pending', sessionId });
+    callDaemon('adopt_session', { projectPath: project.path, sessionId })
+      .then((result) => {
+        const { id } = result as { id: string; status: string };
+        onStarted(id);
+      })
+      .catch((err) => {
+        const message = err instanceof RpcError ? err.message : DEFAULT_ERROR_MESSAGE;
+        setAdoptState({ phase: 'error', sessionId, message });
+      });
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-ink-muted">
+        Found {sessions.length} existing session{sessions.length === 1 ? '' : 's'} in {project.displayName}
+      </p>
+      <ul className="space-y-1 max-h-64 overflow-y-auto">
+        {sessions.map((session) => {
+          const isAdoptingThisRow = adoptState.phase === 'pending' && adoptState.sessionId === session.sessionId;
+          return (
+            <li key={session.sessionId}>
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() => adopt(session.sessionId)}
+                className="w-full text-left rounded-md bg-panel hover:bg-border px-3 py-2 disabled:opacity-50"
+              >
+                <span className="font-medium">{session.summary}</span>
+                {session.firstPrompt && (
+                  <p className="text-xs text-ink-faint truncate">{session.firstPrompt}</p>
+                )}
+                <p className="text-xs text-ink-muted">
+                  {isAdoptingThisRow ? 'Starting…' : `Last active ${formatRelativeTime(session.lastModified)}`}
+                </p>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <button
+        type="button"
+        disabled={pending}
+        onClick={onStartNew}
+        className="w-full text-left rounded-md bg-panel hover:bg-border px-3 py-2 text-sm text-ink-muted underline disabled:opacity-50"
+      >
+        Start a new session instead
+      </button>
+      {adoptState.phase === 'error' && (
+        <p role="alert" className="text-sm text-danger-light">
+          {adoptState.message}
+        </p>
+      )}
     </div>
   );
 }
