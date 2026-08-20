@@ -629,7 +629,7 @@ describe('SessionRunner.adopt', () => {
     // individually well under MAX_MESSAGE_CHARS (20,000), so this exercises the byte-budget walk,
     // not the per-message clamp.
     const allMessages = Array.from({ length: 50 }, (_, i) => ({
-      role: (i % 2 === 0 ? 'user' : 'assistant') as const,
+      role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
       text: `msg-${i}-` + 'y'.repeat(10_000),
     }));
     const getSessionMessagesFn = createMockGetSessionMessagesFn(allMessages);
