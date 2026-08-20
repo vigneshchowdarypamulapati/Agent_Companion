@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { SessionManager, DEFAULT_MAX_CONCURRENT_SESSIONS } from './session-manager.js';
 import { createHttpServer } from './http-server.js';
-import { realQueryFn } from './real-agent-sdk.js';
+import { realQueryFn, realGetSessionMessagesFn } from './real-agent-sdk.js';
 import { getOrCreateDeviceToken } from './device-auth.js';
 import { getOrCreateLocalToken } from './local-auth.js';
 import { RelayClient } from './relay-client.js';
@@ -186,6 +186,7 @@ export async function main(): Promise<void> {
   const eventLog: SessionEvent[] = [];
   const manager = new SessionManager({
     queryFn: realQueryFn,
+    getSessionMessagesFn: realGetSessionMessagesFn,
     onEvent: (event) => {
       eventLog.push(event);
       console.log(`[${event.sessionId}] ${event.type}`);

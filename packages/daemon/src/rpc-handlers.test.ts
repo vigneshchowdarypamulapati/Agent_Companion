@@ -106,7 +106,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
     try {
       await recordProjectUsed(olderDir, { filePath, now: () => 1000 });
       await recordProjectUsed(newerDir, { filePath, now: () => 2000 });
-      const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {}, projectStoreFilePath: filePath });
+      const manager = new SessionManager({ queryFn: createMockQueryFn(), getSessionMessagesFn: async () => [], onEvent: () => {}, projectStoreFilePath: filePath });
 
       const outcome = await dispatchRpc('list_projects', null, {
         version: '0.1.0',
@@ -133,7 +133,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
     try {
       await recordProjectUsed(realProjectDir, { filePath, now: () => 1000 });
       await recordProjectUsed('/tmp/deleted-project-path-does-not-exist', { filePath, now: () => 2000 });
-      const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {}, projectStoreFilePath: filePath });
+      const manager = new SessionManager({ queryFn: createMockQueryFn(), getSessionMessagesFn: async () => [], onEvent: () => {}, projectStoreFilePath: filePath });
 
       const outcome = await dispatchRpc('list_projects', null, {
         version: '0.1.0',
@@ -156,7 +156,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
     const projectsRoot = join(tempDir, 'root');
     await mkdir(join(projectsRoot, 'brand-new-project'), { recursive: true });
     try {
-      const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {}, projectStoreFilePath: filePath });
+      const manager = new SessionManager({ queryFn: createMockQueryFn(), getSessionMessagesFn: async () => [], onEvent: () => {}, projectStoreFilePath: filePath });
 
       const outcome = await dispatchRpc('list_projects', null, {
         version: '0.1.0',
@@ -187,7 +187,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
     await mkdir(usedProjectDir, { recursive: true });
     try {
       await recordProjectUsed(usedProjectDir, { filePath, now: () => 1000 });
-      const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {}, projectStoreFilePath: filePath });
+      const manager = new SessionManager({ queryFn: createMockQueryFn(), getSessionMessagesFn: async () => [], onEvent: () => {}, projectStoreFilePath: filePath });
 
       const outcome = await dispatchRpc('list_projects', null, {
         version: '0.1.0',
@@ -211,7 +211,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
     const projectDir = join(tempDir, 'allowed-project');
     await mkdir(projectDir);
     try {
-      const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {}, projectStoreFilePath: filePath });
+      const manager = new SessionManager({ queryFn: createMockQueryFn(), getSessionMessagesFn: async () => [], onEvent: () => {}, projectStoreFilePath: filePath });
       // start_session re-validates against the same known set list_projects reports (never trusts
       // a phone's earlier list call) — so "a path in the known/allowed set" means it must already
       // be in history (or under projectsRoot). The brief's own reference test omitted this setup
@@ -244,7 +244,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'companion-rpc-projects-test-'));
     const filePath = join(tempDir, 'daemon-projects.json');
     try {
-      const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {}, projectStoreFilePath: filePath });
+      const manager = new SessionManager({ queryFn: createMockQueryFn(), getSessionMessagesFn: async () => [], onEvent: () => {}, projectStoreFilePath: filePath });
 
       const outcome = await dispatchRpc('start_session', { projectPath: '/tmp/never-seen-this-path', prompt: 'hello' }, {
         version: '0.1.0',
@@ -269,6 +269,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
     try {
       const manager = new SessionManager({
         queryFn: createMockQueryFn(),
+        getSessionMessagesFn: async () => [],
         onEvent: () => {},
         projectStoreFilePath: filePath,
         maxConcurrentSessions: 1,
@@ -314,6 +315,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
       // runner-start failure path, not the cap-exceeded path.
       const manager = new SessionManager({
         queryFn: createThrowingQueryFn(),
+        getSessionMessagesFn: async () => [],
         onEvent: () => {},
         projectStoreFilePath: filePath,
         maxConcurrentSessions: 3,
@@ -346,7 +348,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'companion-rpc-projects-test-'));
     const filePath = join(tempDir, 'daemon-projects.json');
     try {
-      const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {}, projectStoreFilePath: filePath });
+      const manager = new SessionManager({ queryFn: createMockQueryFn(), getSessionMessagesFn: async () => [], onEvent: () => {}, projectStoreFilePath: filePath });
 
       const outcome = await dispatchRpc('start_session', { projectPath: '/some/path' }, {
         version: '0.1.0',
@@ -367,7 +369,7 @@ describe('rpc-handlers: list_projects / start_session', () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'companion-rpc-projects-test-'));
     const filePath = join(tempDir, 'daemon-projects.json');
     try {
-      const manager = new SessionManager({ queryFn: createMockQueryFn(), onEvent: () => {}, projectStoreFilePath: filePath });
+      const manager = new SessionManager({ queryFn: createMockQueryFn(), getSessionMessagesFn: async () => [], onEvent: () => {}, projectStoreFilePath: filePath });
 
       const outcome = await dispatchRpc('start_session', { projectPath: 42, prompt: 'hello' }, {
         version: '0.1.0',

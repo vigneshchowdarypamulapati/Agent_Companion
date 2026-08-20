@@ -43,7 +43,7 @@ function createMockAgent() {
 
 describe('dispatchCommand', () => {
   it('rejects start_session', async () => {
-    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
+    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, getSessionMessagesFn: vi.fn(async () => []), onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     await expect(
       dispatchCommand(manager, { type: 'start_session', projectPath: '/tmp/project', prompt: 'hi' })
     ).rejects.toThrow('start_session must be issued locally');
@@ -51,7 +51,7 @@ describe('dispatchCommand', () => {
 
   it('dispatches inject_prompt, respond_to_permission, pause, resume, and stop to the right session', async () => {
     const agent = createMockAgent();
-    const manager = new SessionManager({ queryFn: agent.queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
+    const manager = new SessionManager({ queryFn: agent.queryFn, getSessionMessagesFn: vi.fn(async () => []), onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     const runner = manager.startSession('/tmp/project', 'do the thing');
 
     const permissionPromise = agent.getCanUseTool()({ requestId: 'req-1', toolName: 'Bash', input: {} });
@@ -79,7 +79,7 @@ describe('dispatchCommand', () => {
   });
 
   it('propagates the error for an unknown session id', async () => {
-    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
+    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, getSessionMessagesFn: vi.fn(async () => []), onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     await expect(
       dispatchCommand(manager, { type: 'pause', sessionId: 'does-not-exist' })
     ).rejects.toThrow('No session with id does-not-exist');
@@ -89,7 +89,7 @@ describe('dispatchCommand', () => {
 describe('dispatchCommandWithAck', () => {
   it("acks 'delivered' and returns ok when dispatch succeeds", async () => {
     const agent = createMockAgent();
-    const manager = new SessionManager({ queryFn: agent.queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
+    const manager = new SessionManager({ queryFn: agent.queryFn, getSessionMessagesFn: vi.fn(async () => []), onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     const runner = manager.startSession('/tmp/project', 'do the thing');
     const acks: { status: 'delivered' | 'failed'; message?: string }[] = [];
 
@@ -103,7 +103,7 @@ describe('dispatchCommandWithAck', () => {
   });
 
   it("acks 'failed' with the thrown message and returns ok:false when dispatch throws, without touching the session", async () => {
-    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
+    const manager = new SessionManager({ queryFn: createMockAgent().queryFn, getSessionMessagesFn: vi.fn(async () => []), onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     const acks: { status: 'delivered' | 'failed'; message?: string }[] = [];
 
     const result = await dispatchCommandWithAck(
@@ -118,7 +118,7 @@ describe('dispatchCommandWithAck', () => {
 
   it('calls sendAck exactly once per dispatch, whether it succeeds or fails', async () => {
     const agent = createMockAgent();
-    const manager = new SessionManager({ queryFn: agent.queryFn, onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
+    const manager = new SessionManager({ queryFn: agent.queryFn, getSessionMessagesFn: vi.fn(async () => []), onEvent: () => {}, projectStoreFilePath: newProjectStoreFilePath() });
     const runner = manager.startSession('/tmp/project', 'do the thing');
     const sendAck = vi.fn();
 

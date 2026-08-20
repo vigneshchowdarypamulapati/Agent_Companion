@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { SessionRunner } from './session-runner.js';
-import type { QueryFn } from './agent-sdk-port.js';
+import type { QueryFn, GetSessionMessagesFn } from './agent-sdk-port.js';
 import type { SessionEvent } from '@companion/protocol';
 import { recordProjectUsed } from './project-store.js';
 
@@ -13,6 +13,7 @@ export const DEFAULT_MAX_CONCURRENT_SESSIONS = 3;
 
 export interface SessionManagerOptions {
   queryFn: QueryFn;
+  getSessionMessagesFn: GetSessionMessagesFn;
   onEvent: (event: SessionEvent) => void;
   /** Where the known-projects list is persisted — see project-store.ts. Required, not defaulted
    * here: the daemon's actual path (~/.companion/daemon-projects.json by default, overridable via
@@ -23,6 +24,7 @@ export interface SessionManagerOptions {
 
 export class SessionManager {
   private readonly queryFn: QueryFn;
+  private readonly getSessionMessagesFn: GetSessionMessagesFn;
   private readonly onEvent: (event: SessionEvent) => void;
   private readonly projectStoreFilePath: string;
   private readonly maxConcurrentSessions: number;
@@ -30,6 +32,7 @@ export class SessionManager {
 
   constructor(options: SessionManagerOptions) {
     this.queryFn = options.queryFn;
+    this.getSessionMessagesFn = options.getSessionMessagesFn;
     this.onEvent = options.onEvent;
     this.projectStoreFilePath = options.projectStoreFilePath;
     this.maxConcurrentSessions = options.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS;
@@ -59,13 +62,7 @@ export class SessionManager {
       id,
       projectPath,
       queryFn: this.queryFn,
-      // startSession() only ever calls runner.start(), never runner.adopt(), so this never
-      // actually runs — it exists solely to satisfy SessionRunnerOptions' required field.
-      // SessionManager.adoptSession (a later project task) threads a real getSessionMessagesFn
-      // through SessionManagerOptions and replaces this stub, mirroring how projectStoreFilePath
-      // became a required, always-threaded SessionManagerOptions field even though not every
-      // operation reads it.
-      getSessionMessagesFn: async () => [],
+      getSessionMessagesFn: this.getSessionMessagesFn,
       onEvent: (event) => {
         // A stopped session is removed here, not merely excluded from some separate "active" set.
         // Before this fix, SessionManager never removed a finished session from `this.sessions` at
@@ -94,6 +91,39 @@ export class SessionManager {
     // Fire-and-forget: recording project history must never block or fail session startup — a
     // disk write hiccup here is not a reason to refuse to start a session the caller already
     // committed to.
+    void recordProjectUsed(projectPath, { filePath: this.projectStoreFilePath }).catch(() => {});
+    return runner;
+  }
+
+  adoptSession(projectPath: string, originalSessionId: string): SessionRunner {
+    if (this.activeCount() >= this.maxConcurrentSessions) {
+      throw Object.assign(
+        new Error(
+          `Cannot adopt a session: already at the limit of ${this.maxConcurrentSessions} concurrent sessions.`
+        ),
+        { isCapExceeded: true }
+      );
+    }
+    const id = randomUUID();
+    const runner = new SessionRunner({
+      id,
+      projectPath,
+      queryFn: this.queryFn,
+      getSessionMessagesFn: this.getSessionMessagesFn,
+      onEvent: (event) => {
+        if (event.type === 'stopped') {
+          this.sessions.delete(id);
+        }
+        this.onEvent(event);
+      },
+    });
+    this.sessions.set(id, runner);
+    try {
+      runner.adopt(originalSessionId);
+    } catch (err) {
+      this.sessions.delete(id);
+      throw err;
+    }
     void recordProjectUsed(projectPath, { filePath: this.projectStoreFilePath }).catch(() => {});
     return runner;
   }

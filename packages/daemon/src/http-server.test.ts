@@ -78,6 +78,7 @@ function setUp(overrides: { maxConcurrentSessions?: number } = {}) {
   const projectStoreFilePath = join(sharedTempDir, `daemon-projects-${randomUUID()}.json`);
   const manager = new SessionManager({
     queryFn: agent.queryFn,
+    getSessionMessagesFn: vi.fn(async () => []),
     onEvent: (e) => eventLog.push(e),
     projectStoreFilePath,
     ...overrides,

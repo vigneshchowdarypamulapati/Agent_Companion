@@ -6,7 +6,7 @@ import type { SessionEvent } from '@companion/protocol';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { whenProjectStoreIdle } from './project-store.js';
+import { whenProjectStoreIdle, listKnownProjects } from './project-store.js';
 
 function createMockQueryFn(): QueryFn {
   return () => {
@@ -25,12 +25,14 @@ async function makeManager(overrides: { maxConcurrentSessions?: number } = {}) {
   const projectStoreFilePath = join(tempDir, 'daemon-projects.json');
   const manager = new SessionManager({
     queryFn: createMockQueryFn(),
+    getSessionMessagesFn: vi.fn(async () => []),
     onEvent: () => {},
     projectStoreFilePath,
     ...overrides,
   });
   return {
     manager,
+    projectStoreFilePath,
     // startSession's recordProjectUsed write is deliberately fire-and-forget in production code
     // — wait for the write queue to drain before removing tempDir, or the write's
     // mkdir/writeFile can recreate part of the directory after rm's walk has already passed it,
@@ -132,6 +134,7 @@ describe('SessionManager', () => {
     const projectStoreFilePath = join(tempDir, 'daemon-projects.json');
     const manager = new SessionManager({
       queryFn: flakyQueryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: () => {},
       projectStoreFilePath,
       maxConcurrentSessions: 1,
@@ -162,6 +165,7 @@ describe('SessionManager', () => {
     const projectStoreFilePath = join(tempDir, 'daemon-projects.json');
     const manager = new SessionManager({
       queryFn: crashingQueryFn,
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: (e) => events.push(e),
       projectStoreFilePath,
     });
@@ -187,6 +191,7 @@ describe('SessionManager', () => {
     const projectStoreFilePath = join(tempDir, 'daemon-projects.json');
     const manager = new SessionManager({
       queryFn: createMockQueryFn(),
+      getSessionMessagesFn: vi.fn(async () => []),
       onEvent: () => {},
       projectStoreFilePath,
     });
@@ -209,5 +214,49 @@ describe('SessionManager', () => {
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('SessionManager.adoptSession', () => {
+  it('creates a runner via SessionRunner.adopt, not start', async () => {
+    const { manager } = await makeManager();
+    const runner = manager.adoptSession('/tmp/project', 'original-session-1');
+
+    expect(runner.id).toBeTruthy();
+    expect(runner.status).toBe('running');
+  });
+
+  it('counts toward the concurrency cap exactly like startSession', async () => {
+    const { manager } = await makeManager({ maxConcurrentSessions: 1 });
+    manager.adoptSession('/tmp/project-a', 'original-session-1');
+
+    expect(() => manager.startSession('/tmp/project-b', 'do something')).toThrow(
+      /already at the limit/
+    );
+  });
+
+  it('records the project as used, same as startSession', async () => {
+    const { manager, projectStoreFilePath } = await makeManager();
+    manager.adoptSession('/tmp/project', 'original-session-1');
+
+    // recordProjectUsed is fire-and-forget real fs I/O (mkdir/read/write), not just a microtask
+    // hop — a single setImmediate/tick is not reliably enough time for it to land (same reasoning
+    // as the equivalent startSession test below). Poll instead of guessing a fixed delay.
+    const deadline = Date.now() + 2000;
+    let known: Awaited<ReturnType<typeof listKnownProjects>> = [];
+    while (Date.now() < deadline) {
+      known = await listKnownProjects({ filePath: projectStoreFilePath });
+      if (known.some((p) => p.path === '/tmp/project')) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(known.some((p) => p.path === '/tmp/project')).toBe(true);
+  });
+
+  it('removes the runner from the sessions map once it stops, same as a started session', async () => {
+    const { manager } = await makeManager();
+    const runner = manager.adoptSession('/tmp/project', 'original-session-1');
+    await runner.stop();
+
+    expect(() => manager.getSession(runner.id)).toThrow();
   });
 });
