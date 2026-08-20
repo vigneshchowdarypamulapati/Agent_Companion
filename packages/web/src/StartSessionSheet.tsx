@@ -2,10 +2,18 @@ import { useEffect, useState } from 'react';
 import { useSessions } from './SessionsProvider';
 import { RpcError } from './relay-connection';
 import ProjectPicker, { type ProjectListEntry } from './ProjectPicker';
+import { formatRelativeTime } from './format-relative-time';
 
 export interface StartSessionSheetProps {
   onStarted: (sessionId: string) => void;
   onClose: () => void;
+}
+
+interface DiscoveredSession {
+  sessionId: string;
+  summary: string;
+  firstPrompt: string | undefined;
+  lastModified: number;
 }
 
 /**
@@ -21,6 +29,8 @@ type Phase =
   | { step: 'loading-projects' }
   | { step: 'load-error'; message: string }
   | { step: 'picking'; projects: ProjectListEntry[] }
+  | { step: 'checking-sessions'; project: ProjectListEntry }
+  | { step: 'choosing-session'; project: ProjectListEntry; sessions: DiscoveredSession[] }
   | { step: 'prompting'; project: ProjectListEntry };
 
 const DEFAULT_ERROR_MESSAGE = 'Something went wrong starting the session. Try again.';
@@ -45,6 +55,26 @@ export default function StartSessionSheet({ onStarted, onClose }: StartSessionSh
     };
   }, [callDaemon]);
 
+  function handleSelectProject(project: ProjectListEntry) {
+    setPhase({ step: 'checking-sessions', project });
+    callDaemon('list_discoverable_sessions', { projectPath: project.path })
+      .then((result) => {
+        const sessions = result as DiscoveredSession[];
+        if (sessions.length === 0) {
+          setPhase({ step: 'prompting', project });
+        } else {
+          setPhase({ step: 'choosing-session', project, sessions });
+        }
+      })
+      .catch(() => {
+        // Discovery is a convenience, never a blocking requirement — unlike list_projects
+        // above, whose failure surfaces as load-error, a failed discovery call fails silently
+        // toward the normal fresh-start prompt so the user is never blocked from starting a
+        // session just because discovery couldn't run.
+        setPhase({ step: 'prompting', project });
+      });
+  }
+
   return (
     <div role="dialog" aria-label="Start a session" className="fixed inset-0 z-10 flex items-end justify-center bg-black/40">
       <div className="w-full max-w-lg bg-canvas rounded-t-xl p-4 space-y-4 max-h-[85vh] overflow-y-auto">
@@ -64,7 +94,52 @@ export default function StartSessionSheet({ onStarted, onClose }: StartSessionSh
         )}
 
         {phase.step === 'picking' && (
-          <ProjectPicker projects={phase.projects} onSelect={(project) => setPhase({ step: 'prompting', project })} />
+          <ProjectPicker projects={phase.projects} onSelect={handleSelectProject} />
+        )}
+
+        {phase.step === 'checking-sessions' && <p className="text-ink-muted">Checking for existing sessions…</p>}
+
+        {phase.step === 'choosing-session' && (
+          <div className="space-y-3">
+            <p className="text-sm text-ink-muted">
+              Found {phase.sessions.length} existing session{phase.sessions.length === 1 ? '' : 's'} in{' '}
+              {phase.project.displayName}
+            </p>
+            <ul className="space-y-1 max-h-64 overflow-y-auto">
+              {phase.sessions.map((session) => (
+                <li key={session.sessionId}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      callDaemon('adopt_session', { projectPath: phase.project.path, sessionId: session.sessionId })
+                        .then((result) => {
+                          const { id } = result as { id: string; status: string };
+                          onStarted(id);
+                        })
+                        .catch(() => {
+                          // Falls back to the fresh-start prompt on a failed adopt, same fail-toward-
+                          // actionable-state reasoning used throughout this app — never leaves the user
+                          // stuck on a dead-end tap.
+                          setPhase({ step: 'prompting', project: phase.project });
+                        })
+                    }
+                    className="w-full text-left rounded-md bg-panel hover:bg-border px-3 py-2"
+                  >
+                    <span className="font-medium">{session.summary}</span>
+                    <p className="text-xs text-ink-faint truncate">{session.firstPrompt}</p>
+                    <p className="text-xs text-ink-muted">Last active {formatRelativeTime(session.lastModified)}</p>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              onClick={() => setPhase({ step: 'prompting', project: phase.project })}
+              className="w-full text-left rounded-md bg-panel hover:bg-border px-3 py-2 text-sm text-ink-muted underline"
+            >
+              Start a new session instead
+            </button>
+          </div>
         )}
 
         {phase.step === 'prompting' && (

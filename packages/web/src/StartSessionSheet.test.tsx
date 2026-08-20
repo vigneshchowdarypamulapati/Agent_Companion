@@ -77,3 +77,86 @@ describe('StartSessionSheet', () => {
     expect(promptBox).toHaveValue('do the thing');
   });
 });
+
+const twoDiscoveredSessions = [
+  { sessionId: 'abc', summary: 'Fix the auth bug', firstPrompt: 'fix the bug in auth.ts', lastModified: Date.now() - 60_000 },
+  { sessionId: 'def', summary: 'Refactor the API layer', firstPrompt: undefined, lastModified: Date.now() - 3_600_000 },
+];
+
+describe('StartSessionSheet — session discovery', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('skips straight to the prompt step when no sessions are discoverable', async () => {
+    mockCallDaemon(async (method) => {
+      if (method === 'list_projects') return oneProject;
+      if (method === 'list_discoverable_sessions') return [];
+      throw new Error('unexpected method');
+    });
+    renderSheet();
+
+    await userEvent.click(await screen.findByRole('button', { name: /companion/ }));
+
+    expect(await screen.findByRole('textbox', { name: /what should claude do/i })).toBeInTheDocument();
+  });
+
+  it('shows discovered sessions alongside a "start new" option when any are found', async () => {
+    mockCallDaemon(async (method) => {
+      if (method === 'list_projects') return oneProject;
+      if (method === 'list_discoverable_sessions') return twoDiscoveredSessions;
+      throw new Error('unexpected method');
+    });
+    renderSheet();
+
+    await userEvent.click(await screen.findByRole('button', { name: /companion/ }));
+
+    expect(await screen.findByRole('button', { name: /fix the auth bug/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /refactor the api layer/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /start a new session instead/i })).toBeInTheDocument();
+  });
+
+  it('"start a new session instead" leads to the normal prompt step', async () => {
+    mockCallDaemon(async (method) => {
+      if (method === 'list_projects') return oneProject;
+      if (method === 'list_discoverable_sessions') return twoDiscoveredSessions;
+      throw new Error('unexpected method');
+    });
+    renderSheet();
+
+    await userEvent.click(await screen.findByRole('button', { name: /companion/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /start a new session instead/i }));
+
+    expect(await screen.findByRole('textbox', { name: /what should claude do/i })).toBeInTheDocument();
+  });
+
+  it('tapping a discovered session calls adopt_session and reports onStarted with the new id', async () => {
+    const onStarted = vi.fn();
+    mockCallDaemon(async (method, params) => {
+      if (method === 'list_projects') return oneProject;
+      if (method === 'list_discoverable_sessions') return twoDiscoveredSessions;
+      if (method === 'adopt_session') {
+        expect(params).toEqual({ projectPath: '/home/me/companion', sessionId: 'abc' });
+        return { id: 'forked-session-1', status: 'running' };
+      }
+      throw new Error('unexpected method');
+    });
+    renderSheet(onStarted);
+
+    await userEvent.click(await screen.findByRole('button', { name: /companion/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /fix the auth bug/i }));
+
+    await waitFor(() => expect(onStarted).toHaveBeenCalledWith('forked-session-1'));
+  });
+
+  it('a list_discoverable_sessions failure fails silently toward the normal prompt step', async () => {
+    mockCallDaemon(async (method) => {
+      if (method === 'list_projects') return oneProject;
+      if (method === 'list_discoverable_sessions') throw new Error('boom');
+      throw new Error('unexpected method');
+    });
+    renderSheet();
+
+    await userEvent.click(await screen.findByRole('button', { name: /companion/ }));
+
+    expect(await screen.findByRole('textbox', { name: /what should claude do/i })).toBeInTheDocument();
+  });
+});
