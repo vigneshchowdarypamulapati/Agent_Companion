@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import SessionList from './SessionList';
@@ -192,13 +192,26 @@ describe('SessionList', () => {
         { id: 'a', projectPath: '/tmp/a', status: 'running', lastEventAt: 1 },
         { id: 'b', projectPath: '/tmp/b', status: 'waiting_permission', lastEventAt: 2 },
         { id: 'c', projectPath: '/tmp/c', status: 'stopped', lastEventAt: 3 },
+        // Regression coverage: a paused session used to fall into NO tier at all (invisible) —
+        // this branch deliberately folds `paused` into "Needs you" (a pause is a deliberate user
+        // action, and the session stays idle until the user resumes or stops it), so it must
+        // render there specifically, not in Running or Stopped.
+        { id: 'd', projectPath: '/tmp/d', status: 'paused', lastEventAt: 4 },
       ],
     });
     renderList();
 
-    expect(screen.getByRole('heading', { name: /needs you/i })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /^running$/i })).toBeInTheDocument();
-    expect(screen.getByText(/stopped/i)).toBeInTheDocument();
+    const needsYouSection = screen.getByRole('heading', { name: /needs you/i }).closest('section');
+    expect(needsYouSection).not.toBeNull();
+    expect(within(needsYouSection as HTMLElement).getByText('d')).toBeInTheDocument();
+
+    const runningSection = screen.getByRole('heading', { name: /^running$/i }).closest('section');
+    expect(runningSection).not.toBeNull();
+    expect(within(runningSection as HTMLElement).queryByText('d')).not.toBeInTheDocument();
+
+    const stoppedDetails = screen.getByText(/stopped/i).closest('details');
+    expect(stoppedDetails).not.toBeNull();
+    expect(within(stoppedDetails as HTMLElement).queryByText('d')).not.toBeInTheDocument();
   });
 
   it('leads each card with the project display name, not the full path', () => {
