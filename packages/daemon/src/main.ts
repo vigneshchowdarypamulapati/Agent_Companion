@@ -20,7 +20,36 @@ const DEVICE_TOKEN_PATH =
 const LOCAL_HTTP_TOKEN_PATH =
   process.env.COMPANION_LOCAL_HTTP_TOKEN_PATH ?? join(homedir(), '.companion', 'daemon-local-http.json');
 const PROJECTS_ROOT = process.env.COMPANION_PROJECTS_ROOT;
-const MAX_CONCURRENT_SESSIONS = Number(process.env.COMPANION_MAX_CONCURRENT_SESSIONS ?? DEFAULT_MAX_CONCURRENT_SESSIONS);
+
+/**
+ * Parses COMPANION_MAX_CONCURRENT_SESSIONS, falling back to DEFAULT_MAX_CONCURRENT_SESSIONS for
+ * both an absent value and a malformed one.
+ *
+ * `Number(x) ?? default` alone is not enough: `Number('three')` is `NaN`, and `NaN` is not
+ * nullish, so `??` never catches it. SessionManager's cap check is `activeCount() >=
+ * this.maxConcurrentSessions`, and `n >= NaN` is always `false` in JS — so a typo'd env var
+ * doesn't fall back to the default, it silently makes the concurrency cap unenforceable
+ * (unbounded concurrent sessions), the opposite of what the variable is for. Logs a warning only
+ * when the value was actually present-but-invalid, not merely absent, so a real misconfiguration
+ * is visible in daemon logs without spamming the common case of the var simply being unset.
+ */
+export function parseMaxConcurrentSessions(
+  value: string | undefined,
+  defaultValue: number
+): number {
+  if (value === undefined) return defaultValue;
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed > 0) return parsed;
+  console.error(
+    `Invalid COMPANION_MAX_CONCURRENT_SESSIONS value ${JSON.stringify(value)} (must be a positive integer) — falling back to the default of ${defaultValue}.`
+  );
+  return defaultValue;
+}
+
+const MAX_CONCURRENT_SESSIONS = parseMaxConcurrentSessions(
+  process.env.COMPANION_MAX_CONCURRENT_SESSIONS,
+  DEFAULT_MAX_CONCURRENT_SESSIONS
+);
 const PROJECTS_FILE_PATH =
   process.env.COMPANION_PROJECTS_FILE_PATH ?? join(homedir(), '.companion', 'daemon-projects.json');
 

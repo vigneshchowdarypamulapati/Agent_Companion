@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { isHttpSurfaceEnabled, connectWithRetry, noControlChannelConfiguredError } from './main.js';
+import {
+  isHttpSurfaceEnabled,
+  connectWithRetry,
+  noControlChannelConfiguredError,
+  parseMaxConcurrentSessions,
+} from './main.js';
 
 describe('isHttpSurfaceEnabled', () => {
   it('is off when the env var is unset', () => {
@@ -161,6 +166,58 @@ describe('noControlChannelConfiguredError', () => {
     // must not count as "configured" (main.ts's `if (RELAY_URL)` already treats '' as falsy,
     // this just documents that this check agrees).
     expect(noControlChannelConfiguredError(false, '')).toBeInstanceOf(Error);
+  });
+});
+
+/**
+ * Regression coverage for: `Number(process.env.COMPANION_MAX_CONCURRENT_SESSIONS ??
+ * DEFAULT_MAX_CONCURRENT_SESSIONS)` used to be the whole implementation. `Number('three')` is
+ * `NaN`, which isn't nullish, so `??` never caught it — and SessionManager's cap check
+ * (`activeCount() >= maxConcurrentSessions`) is always `false` against `NaN`, silently making a
+ * typo'd env var disable the concurrency cap entirely instead of falling back to the default.
+ */
+describe('parseMaxConcurrentSessions', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('falls back to the default when the env var is unset', () => {
+    expect(parseMaxConcurrentSessions(undefined, 3)).toBe(3);
+  });
+
+  it('uses a valid positive integer as given', () => {
+    expect(parseMaxConcurrentSessions('5', 3)).toBe(5);
+  });
+
+  it('falls back to the default and warns for a non-numeric value, instead of silently disabling the cap', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(parseMaxConcurrentSessions('three', 3)).toBe(3);
+    expect(errorSpy).toHaveBeenCalledOnce();
+    expect(errorSpy.mock.calls[0][0]).toMatch(/COMPANION_MAX_CONCURRENT_SESSIONS/);
+  });
+
+  it('falls back to the default and warns for zero', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(parseMaxConcurrentSessions('0', 3)).toBe(3);
+    expect(errorSpy).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to the default and warns for a negative number', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(parseMaxConcurrentSessions('-1', 3)).toBe(3);
+    expect(errorSpy).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to the default and warns for a non-integer number', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(parseMaxConcurrentSessions('2.5', 3)).toBe(3);
+    expect(errorSpy).toHaveBeenCalledOnce();
+  });
+
+  it('does not warn when the env var is simply absent', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    parseMaxConcurrentSessions(undefined, 3);
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 });
 
